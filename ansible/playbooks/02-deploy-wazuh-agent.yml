@@ -1,0 +1,98 @@
+---
+# =============================================================================
+# Playbook: 02-deploy-wazuh-agent.yml
+# Purpose : Deploy and configure the Wazuh agent on Linux servers
+# Target  : All linux_servers (except the Wazuh manager itself)
+# Author  : Aymerick Victoire
+# Ref     : https://documentation.wazuh.com/current/installation-guide/
+# =============================================================================
+
+- name: Deploy Wazuh Agent
+  hosts: linux_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    wazuh_version: "4.9.0"
+    wazuh_manager_ip: "192.168.10.30"   # SRV-WAZUH
+    wazuh_agent_group: "linux-servers"
+    wazuh_registration_password: "{{ vault_wazuh_reg_password }}"  # ansible-vault
+
+  tasks:
+
+    # ── Skip if this IS the Wazuh manager ─────────────────────────
+    - name: Skip Wazuh manager host
+      meta: end_host
+      when: ansible_host == wazuh_manager_ip
+
+    # ── Add Wazuh repository ──────────────────────────────────────
+    - name: Install curl and gnupg (prerequisite)
+      apt:
+        name:
+          - curl
+          - gnupg
+        state: present
+
+    - name: Add Wazuh GPG key
+      apt_key:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+
+    - name: Add Wazuh APT repository
+      apt_repository:
+        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+        state: present
+        filename: wazuh
+
+    # ── Install agent ─────────────────────────────────────────────
+    - name: Update apt cache
+      apt:
+        update_cache: true
+
+    - name: Install Wazuh agent
+      apt:
+        name: "wazuh-agent={{ wazuh_version }}-1"
+        state: present
+      environment:
+        WAZUH_MANAGER: "{{ wazuh_manager_ip }}"
+        WAZUH_AGENT_GROUP: "{{ wazuh_agent_group }}"
+        WAZUH_REGISTRATION_PASSWORD: "{{ wazuh_registration_password }}"
+
+    # ── Configure ossec.conf ──────────────────────────────────────
+    - name: Configure Wazuh agent (ossec.conf)
+      template:
+        src: templates/wazuh-ossec.conf.j2
+        dest: /var/ossec/etc/ossec.conf
+        owner: root
+        group: wazuh
+        mode: '0640'
+        backup: true
+      notify: Restart Wazuh agent
+
+    # ── Enable and start ──────────────────────────────────────────
+    - name: Enable Wazuh agent service
+      systemd:
+        name: wazuh-agent
+        enabled: true
+        daemon_reload: true
+
+    - name: Start Wazuh agent
+      systemd:
+        name: wazuh-agent
+        state: started
+
+    # ── Verify registration ───────────────────────────────────────
+    - name: Check Wazuh agent status
+      command: /var/ossec/bin/wazuh-control status
+      register: wazuh_status
+      changed_when: false
+
+    - name: Display agent status
+      debug:
+        var: wazuh_status.stdout_lines
+
+  handlers:
+    - name: Restart Wazuh agent
+      systemd:
+        name: wazuh-agent
+        state: restarted

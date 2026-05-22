@@ -1,0 +1,238 @@
+---
+# =============================================================================
+# Playbook: 01-debian-hardening.yml
+# Purpose : Apply security hardening baseline to Debian/Ubuntu servers
+# Target  : linux_servers group (Wazuh, syslog, etc.)
+# Author  : Aymerick Victoire
+# Ref     : CIS Debian Linux 11 Benchmark, ANSSI-Linux-Minimal
+# =============================================================================
+
+- name: Debian Security Hardening Baseline
+  hosts: linux_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    # SSH hardening
+    ssh_port: 22
+    ssh_allow_users: "ansible"
+    ssh_max_auth_tries: 3
+
+    # Sysctl hardening
+    sysctl_settings:
+      # Network hardening
+      net.ipv4.ip_forward: 0
+      net.ipv4.conf.all.send_redirects: 0
+      net.ipv4.conf.default.send_redirects: 0
+      net.ipv4.conf.all.accept_redirects: 0
+      net.ipv4.conf.default.accept_redirects: 0
+      net.ipv4.conf.all.log_martians: 1
+      net.ipv4.icmp_ignore_bogus_error_responses: 1
+      net.ipv4.tcp_syncookies: 1
+      # Kernel hardening
+      kernel.randomize_va_space: 2       # ASLR full randomization
+      kernel.dmesg_restrict: 1           # Restrict dmesg to root
+      kernel.kptr_restrict: 2            # Hide kernel pointers
+      fs.protected_hardlinks: 1
+      fs.protected_symlinks: 1
+
+    # Packages to remove (unnecessary attack surface)
+    packages_to_remove:
+      - telnet
+      - rsh-client
+      - rsh-redone-client
+      - nis
+      - talk
+      - talkd
+
+    # Packages to install
+    packages_to_install:
+      - ufw
+      - fail2ban
+      - auditd
+      - audispd-plugins
+      - unattended-upgrades
+      - apt-listchanges
+      - libpam-pwquality
+
+  tasks:
+
+    # ── System update ─────────────────────────────────────────────
+    - name: Update apt cache and upgrade all packages
+      apt:
+        update_cache: true
+        upgrade: safe
+        cache_valid_time: 3600
+
+    # ── Remove legacy packages ────────────────────────────────────
+    - name: Remove unused and insecure packages
+      apt:
+        name: "{{ packages_to_remove }}"
+        state: absent
+        purge: true
+
+    # ── Install hardening tools ───────────────────────────────────
+    - name: Install hardening packages
+      apt:
+        name: "{{ packages_to_install }}"
+        state: present
+
+    # ── SSH hardening ─────────────────────────────────────────────
+    - name: Harden SSH configuration
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+        backup: true
+      loop:
+        - { regexp: '^#?PermitRootLogin',          line: 'PermitRootLogin no' }
+        - { regexp: '^#?PasswordAuthentication',    line: 'PasswordAuthentication no' }
+        - { regexp: '^#?X11Forwarding',             line: 'X11Forwarding no' }
+        - { regexp: '^#?MaxAuthTries',              line: 'MaxAuthTries {{ ssh_max_auth_tries }}' }
+        - { regexp: '^#?ClientAliveInterval',       line: 'ClientAliveInterval 300' }
+        - { regexp: '^#?ClientAliveCountMax',       line: 'ClientAliveCountMax 2' }
+        - { regexp: '^#?LoginGraceTime',            line: 'LoginGraceTime 30' }
+        - { regexp: '^#?Protocol',                  line: 'Protocol 2' }
+        - { regexp: '^#?AllowUsers',                line: 'AllowUsers {{ ssh_allow_users }}' }
+        - { regexp: '^#?UsePAM',                    line: 'UsePAM yes' }
+        - { regexp: '^#?PrintMotd',                 line: 'PrintMotd no' }
+      notify: Restart SSH
+
+    # ── Sysctl ────────────────────────────────────────────────────
+    - name: Apply kernel sysctl hardening parameters
+      sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        state: present
+        sysctl_file: /etc/sysctl.d/99-hardening.conf
+        reload: true
+      loop: "{{ sysctl_settings | dict2items }}"
+
+    # ── UFW Firewall ──────────────────────────────────────────────
+    - name: Set UFW default policies (deny in, allow out)
+      ufw:
+        default: "{{ item.policy }}"
+        direction: "{{ item.direction }}"
+      loop:
+        - { policy: deny,  direction: incoming }
+        - { policy: allow, direction: outgoing }
+
+    - name: Allow SSH through UFW
+      ufw:
+        rule: allow
+        port: "{{ ssh_port }}"
+        proto: tcp
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    # ── Fail2ban ──────────────────────────────────────────────────
+    - name: Deploy fail2ban jail configuration
+      copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [DEFAULT]
+          bantime  = 3600
+          findtime = 600
+          maxretry = 5
+          backend  = systemd
+
+          [sshd]
+          enabled  = true
+          port     = {{ ssh_port }}
+          logpath  = %(sshd_log)s
+        mode: '0644'
+      notify: Restart fail2ban
+
+    # ── Auditd ────────────────────────────────────────────────────
+    - name: Deploy auditd rules (ANSSI baseline)
+      copy:
+        dest: /etc/audit/rules.d/99-hardening.rules
+        content: |
+          # Delete all existing rules
+          -D
+
+          # Buffer size
+          -b 8192
+
+          # Monitor privilege escalation
+          -a always,exit -F arch=b64 -S setuid -S setgid -F a0=0 -F exe=/usr/bin/sudo -k privilege_escalation
+          -w /usr/bin/sudo -p x -k sudo_usage
+
+          # Monitor user/group management
+          -w /etc/passwd -p wa -k identity
+          -w /etc/group -p wa -k identity
+          -w /etc/shadow -p wa -k identity
+          -w /etc/sudoers -p wa -k sudoers
+
+          # Monitor SSH keys
+          -w /etc/ssh/sshd_config -p wa -k ssh_config
+
+          # Monitor scheduled tasks
+          -w /etc/crontab -p wa -k cron
+          -w /etc/cron.d -p wa -k cron
+
+          # Login/logout events
+          -w /var/log/wtmp -p wa -k session
+          -w /var/log/btmp -p wa -k session
+
+          # Make audit config immutable (requires reboot to change)
+          -e 2
+        mode: '0640'
+      notify: Restart auditd
+
+    # ── Unattended upgrades ───────────────────────────────────────
+    - name: Enable unattended security upgrades
+      copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          APT::Periodic::AutocleanInterval "7";
+        mode: '0644'
+
+    # ── Password policy ───────────────────────────────────────────
+    - name: Configure PAM password quality (pwquality)
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^#?minlen',    line: 'minlen = 14' }
+        - { regexp: '^#?dcredit',   line: 'dcredit = -1' }
+        - { regexp: '^#?ucredit',   line: 'ucredit = -1' }
+        - { regexp: '^#?lcredit',   line: 'lcredit = -1' }
+        - { regexp: '^#?ocredit',   line: 'ocredit = -1' }
+        - { regexp: '^#?maxrepeat', line: 'maxrepeat = 3' }
+
+    # ── MOTD/Banner ───────────────────────────────────────────────
+    - name: Set login banner (legal warning)
+      copy:
+        dest: /etc/issue.net
+        content: |
+          =========================================================
+          AUTHORIZED ACCESS ONLY
+          This system is monitored. Unauthorized access is prohibited
+          and subject to legal prosecution.
+          =========================================================
+        mode: '0644'
+
+  handlers:
+    - name: Restart SSH
+      service:
+        name: sshd
+        state: restarted
+
+    - name: Restart fail2ban
+      service:
+        name: fail2ban
+        state: restarted
+        enabled: true
+
+    - name: Restart auditd
+      service:
+        name: auditd
+        state: restarted
+        enabled: true
