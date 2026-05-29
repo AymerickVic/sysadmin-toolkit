@@ -1,0 +1,82 @@
+---
+# =============================================================================
+# Playbook: 01-configuration-initiale.yml
+# Purpose : Configuration initiale des VMs — paquets, hostname, NTP, UFW
+# Target  : groupe1 (4 VMs Linux)
+# Author  : Aymerick Victoire
+# =============================================================================
+
+- name: Configuration initiale des VMs Groupe 1
+  hosts: groupe1
+  become: true
+
+  tasks:
+
+    - name: Mise à jour apt et upgrade des paquets
+      apt:
+        update_cache: true
+        upgrade: safe
+        cache_valid_time: 3600
+
+    - name: Installation des paquets de base
+      apt:
+        name:
+          - vim
+          - curl
+          - wget
+          - htop
+          - net-tools
+          - tree
+          - git
+          - chrony
+          - ufw
+          - sudo
+          - rsync
+        state: present
+
+    - name: Configurer le hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Ajouter l'entrée dans /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ internal_ip }} {{ inventory_hostname }}"
+        state: present
+
+    - name: Configurer la timezone Europe/Paris
+      timezone:
+        name: Europe/Paris
+
+    - name: Configurer NTP — serveur pfSense (192.168.10.1)
+      lineinfile:
+        path: /etc/chrony/chrony.conf
+        regexp: "^pool"
+        line: "server {{ network.gateway }} iburst"
+        state: present
+      notify: Redémarrer chrony
+
+    # /!\ ATTENTION: RÈGLES AVANT ACTIVATION /!\
+    - name: UFW — Autoriser SSH
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+
+    - name: UFW — Autoriser VNC
+      ufw:
+        rule: allow
+        port: "5901"
+        proto: tcp
+
+    - name: UFW — Activer le pare-feu
+      ufw:
+        state: enabled
+        policy: deny
+
+  handlers:
+    - name: Redémarrer chrony
+      service:
+        name: chrony
+        state: restarted
+        enabled: true

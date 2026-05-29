@@ -1,0 +1,7 @@
+---
+# Variables globales — toutes les VMs
+# Les valeurs sensibles sont dans ansible-vault (ansible-vault encrypt_string)
+# Créer le vault : ansible-vault create group_vars/vault.yml
+
+ansible_ssh_pass: "{{ vault_g1admin_password }}"
+ansible_become_pass: "{{ vault_g1admin_password }}"

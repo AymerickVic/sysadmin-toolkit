@@ -1,138 +1,146 @@
-# Active Directory Structure — lab.local
+# Structure Active Directory — g1soc.local
 
-> Domain design for the fil rouge lab. Documents the OU structure, group policy design, and administrative model.
+> Domaine AD du lab fil rouge Groupe 1. Documente les OUs, groupes, utilisateurs, GPO et configuration DNS.
 
-## Domain Information
+## Informations domaine
 
-| Parameter | Value |
-|-----------|-------|
-| Domain name (FQDN) | `lab.local` |
-| NetBIOS name | `LAB` |
-| Forest/Domain level | Windows Server 2016 |
-| Domain Controller | DC01 — 192.168.10.10 |
-| DNS zones | `lab.local` (primary), `10.168.192.in-addr.arpa` (reverse) |
+| Paramètre | Valeur |
+|-----------|--------|
+| FQDN | `g1soc.local` |
+| Nom NetBIOS | `G1SOC` |
+| Niveau forêt/domaine | Windows Server 2025 |
+| Contrôleur de domaine | G1-SRV-AD — 192.168.10.10 |
+| Zones DNS | `g1soc.local` (primaire), zone inverse `10.168.192.in-addr.arpa` |
 
-## OU Structure
+## Structure des OUs
 
 ```
-DC=lab,DC=local
+DC=g1soc,DC=local
 │
-├── OU=Computers
-│   ├── OU=Workstations          ← CLIENT01 and future workstations
-│   └── OU=Servers               ← Member servers (FILE01, GLPI01)
-│
-├── OU=Users
-│   ├── OU=IT                    ← IT admin accounts
-│   ├── OU=Finance               ← Finance department users
-│   ├── OU=RH                    ← HR department users
-│   └── OU=Direction             ← Management users
-│
-├── OU=Groups
-│   ├── OU=Security              ← ACL groups (GRP-IT, GRP-Finance, etc.)
-│   └── OU=Distribution          ← Email distribution lists
-│
-├── OU=Service_Accounts          ← Service accounts (gMSA preferred)
-│   └── gMSA: svc-wazuh$         ← Wazuh agent service account
-│
-└── OU=Disabled                  ← Disabled accounts staging area
-    ├── OU=Users_Disabled
-    └── OU=Computers_Disabled
+├── OU=IT                    ← Comptes IT admin (cmoreau)
+├── OU=Users                 ← Utilisateurs SOC (amartin, bdupont)
+├── OU=Computers             ← Postes clients domaine (g1-workstation)
+├── OU=Security              ← Objets de sécurité
+└── OU=Groups                ← Groupes de sécurité (scope: Global)
+    ├── SOC-Analysts
+    ├── SOC-Admins
+    └── IT-Support
 ```
 
-## Group Naming Convention
+## Groupes de sécurité
 
-| Prefix | Type | Example |
-|--------|------|---------|
-| `GRP-` | Security group (resource access) | `GRP-IT`, `GRP-Finance` |
-| `ADM-` | Administrative group | `ADM-Helpdesk`, `ADM-ServerAdmins` |
-| `DL-` | Distribution list | `DL-AllUsers` |
+| Groupe | OU | Membres | Rôle |
+|--------|-----|---------|------|
+| `SOC-Analysts` | OU=Groups | amartin, bdupont | Analystes SOC — lecture alertes Wazuh |
+| `SOC-Admins` | OU=Groups | cmoreau | Administrateurs SOC — gestion Wazuh + règles |
+| `IT-Support` | OU=Groups | amartin, cmoreau | Support IT — accès GLPI + inventaire |
 
-## Security Groups
+## Utilisateurs
 
-| Group | Members | Purpose |
-|-------|---------|---------|
-| Domain Admins | admin.it only | Full domain admin — Tier 0 |
-| ADM-ServerAdmins | it-admins | Local admin on servers via GPO |
-| ADM-Helpdesk | helpdesk users | Password reset, account unlock only |
-| GRP-IT | IT dept users | Access to IT file shares |
-| GRP-Finance | Finance dept users | Access to Finance shares |
-| GRP-AllUsers | All enabled users | Basic shared resources |
+| Nom | Login | OU | Groupes | Rôle |
+|-----|-------|----|---------|------|
+| Alice Martin | `amartin` | OU=Users | SOC-Analysts, IT-Support | Analyste SOC |
+| Bob Dupont | `bdupont` | OU=Users | SOC-Analysts | Analyste SOC |
+| Claire Moreau | `cmoreau` | OU=IT | SOC-Admins, IT-Support | Admin IT & SOC |
 
-## Group Policy Objects
+> **Note Windows FR :** Le compte administrateur intégré est `Administrateur` (RID 500),
+> pas `Administrator` — Windows Server 2025 installé en français.
 
-### Computer GPOs
+## Group Policy Objects (GPO)
 
-| GPO | Linked To | Purpose |
-|-----|-----------|---------|
-| `GPO-Computer-Baseline` | OU=Computers | Windows Update config, audit policy, firewall on |
-| `GPO-Workstation-Security` | OU=Workstations | USB restriction, screen lock 5min, Windows Defender |
-| `GPO-Server-Security` | OU=Servers | Restrict local logon, AppLocker, no RDP from workstations |
-| `GPO-DC-Security` | Domain Controllers (default) | Strict audit policy, no non-admin logons |
+| GPO | Liée à | Objectif |
+|-----|--------|----------|
+| `SOC-AuditPolicy` | Racine du domaine | Active les audits de sécurité |
 
-### User GPOs
-
-| GPO | Linked To | Purpose |
-|-----|-----------|---------|
-| `GPO-User-Baseline` | OU=Users | Drive mappings, printer, WSUS, desktop background |
-| `GPO-User-IT` | OU=Users\IT | PowerShell unrestricted, RSAT tools |
-| `GPO-HomeFolder-Redirect` | OU=Users | Folder redirection: Documents → \\SRV-FILE01\homes\%username% |
-
-### Key GPO Settings — Computer Baseline
+### Paramètres SOC-AuditPolicy
 
 ```
 Computer Configuration > Policies > Windows Settings > Security Settings:
-  Account Policies:
-    Password Policy:
-      Minimum length          : 12 characters
-      Complexity requirements : Enabled
-      Maximum password age    : 90 days
-      Enforce history         : 10 passwords
-    Account Lockout Policy:
-      Lockout threshold       : 5 invalid attempts
-      Lockout duration        : 30 minutes
-      Reset counter after     : 30 minutes
-
-  Local Policies > Audit Policy (Advanced):
-    Logon Events              : Success, Failure
-    Account Management        : Success, Failure
-    Privilege Use             : Success, Failure
-    Object Access             : Failure
-
-  Security Options:
-    Network security: LAN Manager auth level  : NTLMv2 only
-    Network security: LDAP signing requirement : Require signing
-    Interactive logon: Machine inactivity limit: 900 seconds
+  Advanced Audit Policy:
+    Logon/Logoff:
+      Audit Logon                      : Success, Failure  → Events 4624, 4625
+      Audit Logoff                     : Success
+    Account Management:
+      Audit User Account Management    : Success, Failure  → Events 4720, 4722, 4725, 4726
+      Audit Security Group Management  : Success           → Events 4728, 4732, 4756
+      Audit Computer Account Management: Success
+    Account Logon:
+      Audit Kerberos Authentication    : Success, Failure  → Event 4771, 4768
+    DS Access:
+      Audit Directory Service Changes  : Success           → Event 4740 (lockout)
 ```
 
-## Administrative Model (Tiered Admin)
+## DNS — Zone g1soc.local
 
-Simplified three-tier model adapted for lab scale:
+| Enregistrement | Type | Valeur |
+|----------------|------|--------|
+| `g1soc.local` | SOA / NS | G1-SRV-AD |
+| `g1-srv-ad` | A | 192.168.10.10 |
+| `g1-srv-app` | A | 192.168.10.11 |
+| `g1-suricata` | A | 192.168.10.12 |
+| `g1-wazuh` | A | 192.168.10.13 |
+| `g1-workstation` | A | 192.168.10.99 |
+| `glpi` | CNAME | g1-srv-app |
+| `wazuh` | CNAME | g1-wazuh |
+| `_ldap._tcp` | SRV | G1-SRV-AD port 389 |
+| `_kerberos._tcp` | SRV | G1-SRV-AD port 88 |
 
-| Tier | Scope | Account type | Example |
-|------|-------|--------------|---------|
-| T0 | Domain controllers, AD schema | `admin.it` (Domain Admin) | DC management only |
-| T1 | Member servers | `srv-admin` (local admin via GPO) | Server maintenance |
-| T2 | Workstations | `help-desk` (Helpdesk group) | User support |
+## Intégration domaine — G1-workstation
 
-**Principle:** T1/T2 accounts cannot log onto Tier-0 assets (enforced by GPO logon rights restriction on DCs).
+G1-workstation (Debian 13 Trixie) est joint au domaine via `net ads join` avec `smb.conf` configuré.
 
-## DNS Zones
+```bash
+# Prérequis : NTP synchronisé (Kerberos tolère 5 min max de décalage)
+# realm join échoue (CONSTRAINT_ATT_TYPE userAccountControl sur Windows 2016+)
+# → utiliser net ads join
 
-### Forward Zone: `lab.local`
+net ads join -U amartin%<password>
+```
 
-| Record | Type | Value |
-|--------|------|-------|
-| `lab.local` | SOA/NS | DC01 |
-| `dc01` | A | 192.168.10.10 |
-| `srv-file01` | A | 192.168.10.20 |
-| `srv-glpi01` | A | 192.168.10.21 |
-| `srv-wazuh` | A | 192.168.10.30 |
-| `srv-syslog` | A | 192.168.10.31 |
-| `glpi` | CNAME | srv-glpi01 |
-| `wazuh` | CNAME | srv-wazuh |
-| `_ldap._tcp` | SRV | DC01 port 389 |
-| `_kerberos._tcp` | SRV | DC01 port 88 |
+**Fichiers de configuration :**
 
-### Reverse Zone: `10.168.192.in-addr.arpa`
+```ini
+# /etc/samba/smb.conf
+[global]
+    workgroup = G1SOC
+    realm = G1SOC.LOCAL
+    security = ADS
+    kerberos method = secrets and keytab
+    server role = member server
+```
 
-PTR records for all static hosts — auto-created by AD DNS when A records are added with "create associated pointer record" checked.
+```ini
+# /etc/sssd/sssd.conf (chmod 600)
+[sssd]
+services = nss, pam
+config_file_version = 2
+domains = g1soc.local
+
+[domain/g1soc.local]
+id_provider = ad
+ad_domain = g1soc.local
+krb5_realm = G1SOC.LOCAL
+use_fully_qualified_names = False
+ldap_id_mapping = True
+access_provider = ad
+ad_gpo_access_control = disabled
+fallback_homedir = /home/%u@%d
+cache_credentials = True
+```
+
+**Vérification :**
+```bash
+id amartin          # retourne UID/GID AD
+ssh amartin@192.168.10.99  # connexion SSH avec compte AD ✅
+```
+
+## Notes WinRM sur DC (G1-SRV-AD)
+
+WinRM avec NTLM est **rejeté** après la promotion en Domain Controller (comportement Windows Server 2016+).
+Kerberos requis pour WinRM. Alternative : utiliser Samba/SMB (`net ads`, `rpcclient`, `smbclient`).
+
+```yaml
+# Inventaire Ansible — transport Kerberos obligatoire
+ansible_winrm_transport: kerberos
+# Tunnel SSH prérequis : ssh -L 15985:192.168.10.10:5985 g1admin@10.29.200.127
+```

@@ -91,61 +91,71 @@ Run in **PowerShell 5.1+** on a domain-joined machine or with `-Server` targetin
 
 ---
 
-## Ansible Playbooks — Linux
+## Ansible Playbooks — Lab Fil Rouge
 
-Targets: Debian 12 / Ubuntu 22.04 servers. Requires Ansible 2.14+ on the control node.
+Targets: Debian 13 Trixie (4 VMs Linux) + pfSense 2.8. Requires Ansible 2.14+ on the control node.
 
 ```bash
-# Run against all Linux servers
-ansible-playbook -i ansible/inventory/hosts.yml ansible/playbooks/01-debian-hardening.yml
+# Configurer l'inventaire (adapter les IPs / ports si nécessaire)
+# ansible/inventory/groupe1.yml
 
-# Deploy Wazuh agent (uses ansible-vault for registration password)
-ansible-playbook -i ansible/inventory/hosts.yml ansible/playbooks/02-deploy-wazuh-agent.yml --ask-vault-pass
+# Créer le vault pour les credentials
+ansible-vault create ansible/group_vars/vault.yml
 
-# Configure centralized log forwarding
-ansible-playbook -i ansible/inventory/hosts.yml ansible/playbooks/03-configure-rsyslog.yml
+# Exécuter les playbooks dans l'ordre (depuis ansible/)
+ansible-playbook playbooks/01-configuration-initiale.yml
+ansible-playbook playbooks/02-configuration-reseau.yml
+ansible-playbook playbooks/03-deploiement-vnc-xfce4.yml
+ansible-playbook playbooks/04-deploiement-suricata.yml
+ansible-playbook playbooks/05-deploiement-wazuh.yml
+ansible-playbook playbooks/06-deploiement-applications.yml
+ansible-playbook playbooks/07-configuration-pfsense.yml
+
+# Cibler un hôte spécifique
+ansible-playbook playbooks/01-configuration-initiale.yml --limit g1-srv-app
+
+# Mode dry-run
+ansible-playbook playbooks/01-configuration-initiale.yml --check
 ```
 
-| Playbook | What it does |
-|----------|-------------|
-| [`01-debian-hardening.yml`](ansible/playbooks/01-debian-hardening.yml) | SSH hardening, sysctl (ASLR, SYN cookies), UFW, fail2ban, auditd rules, pwquality |
-| [`02-deploy-wazuh-agent.yml`](ansible/playbooks/02-deploy-wazuh-agent.yml) | Installs and registers Wazuh 4.9 agent to manager |
-| [`03-configure-rsyslog.yml`](ansible/playbooks/03-configure-rsyslog.yml) | Configures rsyslog TCP forwarding to central syslog server |
+| Playbook | Cible | Ce qu'il fait |
+|----------|-------|---------------|
+| [`01-configuration-initiale.yml`](ansible/playbooks/01-configuration-initiale.yml) | groupe1 | Màj système, paquets de base, hostname, NTP (pfSense), UFW |
+| [`02-configuration-reseau.yml`](ansible/playbooks/02-configuration-reseau.yml) | groupe1 | Config réseau statique via templates (network-interface.j2, resolv.conf.j2) |
+| [`03-deploiement-vnc-xfce4.yml`](ansible/playbooks/03-deploiement-vnc-xfce4.yml) | groupe1 | TigerVNC port 5901 + XFCE4 sur les 4 VMs Linux |
+| [`04-deploiement-suricata.yml`](ansible/playbooks/04-deploiement-suricata.yml) | g1-suricata | Suricata 7.0.10 IDS via apt, règles suricata-update |
+| [`05-deploiement-wazuh.yml`](ansible/playbooks/05-deploiement-wazuh.yml) | g1-wazuh + groupe1 | Wazuh 4.14.4 all-in-one + 4 agents + règles SOC personnalisées |
+| [`06-deploiement-applications.yml`](ansible/playbooks/06-deploiement-applications.yml) | g1-srv-app + groupe1 | GLPI 11.0.6 (Apache2 + MariaDB) + GLPI Agent 1.11 sur toutes les VMs |
+| [`07-configuration-pfsense.yml`](ansible/playbooks/07-configuration-pfsense.yml) | g1-pfsense | DNS Unbound, DHCP LAN (.100–.200), 10 règles firewall via pfsensible |
 
 ---
 
 ## Lab Infrastructure
 
-This toolkit was built alongside the **fil rouge lab** — a full enterprise simulation used during the B3 CPI program.
+This toolkit was built alongside the **fil rouge lab** — a 6-VM SOC simulation on KVM/libvirt (B3 CPI program, Groupe 1).
 
 ```mermaid
 graph LR
-    subgraph VLAN10["VLAN 10 — Servers (192.168.10.0/24)"]
-        DC01["🏢 DC01\nActive Directory\n192.168.10.10"]
-        WAZUH["🔍 Wazuh SIEM\n192.168.10.30"]
-        GLPI["🎫 GLPI\n192.168.10.21"]
-        SYSLOG["📋 rsyslog\n192.168.10.31"]
+    subgraph VLAN100["VLAN 100 — Groupe 1 SOC (192.168.10.0/24)"]
+        PF["G1-pfSense\n.1\nRouteur + Firewall"]
+        AD["G1-SRV-AD\n.10\nActive Directory + DNS\nWindows Server 2025"]
+        APP["G1-SRV-APP\n.11\nApache + GLPI 11"]
+        IDS["G1-SURICATA\n.12\nSuricata 7.0.10"]
+        SIEM["G1-WAZUH\n.13\nWazuh 4.14.4"]
+        WS["G1-workstation\n.99\nDebian 13"]
     end
 
-    subgraph VLAN20["VLAN 20 — Workstations"]
-        CLIENT01["💻 CLIENT01\nWindows 10\n192.168.20.10"]
-    end
+    PF --> AD
+    PF --> APP
+    PF --> IDS
+    PF --> SIEM
+    PF --> WS
 
-    subgraph VLAN30["VLAN 30 — Management"]
-        ANSIBLE["⚙️ Ansible\n192.168.30.5"]
-    end
-
-    PF["🔥 pfSense\nFirewall + VLANs"]
-
-    PF --> VLAN10
-    PF --> VLAN20
-    PF --> VLAN30
-
-    DC01 -->|"AD Auth + DNS"| CLIENT01
-    WAZUH -->|"Wazuh agent"| CLIENT01
-    SYSLOG -->|"rsyslog → Wazuh"| WAZUH
-    ANSIBLE -.->|"Ansible playbooks"| DC01
-    ANSIBLE -.->|"Ansible playbooks"| WAZUH
+    SIEM -->|"Wazuh agents"| AD
+    SIEM -->|"Wazuh agent"| APP
+    SIEM -->|"eve.json"| IDS
+    SIEM -->|"Wazuh agent"| WS
+    AD -->|"AD Auth + DNS"| WS
 ```
 
 **Full documentation:**
@@ -169,22 +179,38 @@ graph LR
 
 ```
 sysadmin-toolkit/
-├── powershell/
-│   ├── active-directory/      # AD user management, security audits, GPO
-│   ├── monitoring/            # Disk and service monitoring
-│   └── hardening/             # Windows security baseline
 ├── ansible/
-│   ├── inventory/             # Hosts file with VLAN-based groups
-│   └── playbooks/             # Hardening, Wazuh, rsyslog
+│   ├── ansible.cfg                        # Config Ansible (inventory, SSH, privilege escalation)
+│   ├── inventory/
+│   │   └── groupe1.yml                    # Inventaire fil rouge (tunnels SOCAT + pfSense + AD)
+│   ├── group_vars/
+│   │   └── all.yml                        # Variables globales (vault pour credentials)
+│   ├── templates/
+│   │   ├── network-interface.j2           # Config interface réseau statique
+│   │   ├── resolv.conf.j2                 # Configuration DNS
+│   │   ├── suricata.yaml.j2               # Configuration Suricata IDS
+│   │   └── ossec.conf.j2                  # Config agent Wazuh (+ eve.json sur g1-suricata)
+│   └── playbooks/
+│       ├── 01-configuration-initiale.yml  # Paquets, hostname, NTP, UFW
+│       ├── 02-configuration-reseau.yml    # Réseau statique via templates
+│       ├── 03-deploiement-vnc-xfce4.yml   # TigerVNC + XFCE4
+│       ├── 04-deploiement-suricata.yml    # Suricata 7.0.10
+│       ├── 05-deploiement-wazuh.yml       # Wazuh 4.14.4 + agents + règles SOC
+│       ├── 06-deploiement-applications.yml # GLPI 11.0.6 + GLPI Agent
+│       └── 07-configuration-pfsense.yml   # pfSense DNS/DHCP/firewall via pfsensible
+├── powershell/
+│   ├── active-directory/                  # AD user management, security audits, GPO
+│   ├── monitoring/                        # Disk and service monitoring
+│   └── hardening/                         # Windows security baseline
 ├── network/
-│   ├── vlan-design.md         # Mermaid network diagram + firewall rules
-│   └── pfsense-baseline.md    # pfSense config reference
+│   ├── vlan-design.md                     # Architecture réseau VLAN 100, tunnels SOCAT
+│   └── pfsense-baseline.md                # Configuration pfSense référence
 ├── lab/
-│   ├── README.md              # Lab overview
-│   ├── ad-structure.md        # AD design docs
-│   └── wazuh-custom-rules.md  # SIEM detection rules
+│   ├── README.md                          # Vue d'ensemble lab, VMs, accès
+│   ├── ad-structure.md                    # AD g1soc.local — OUs, groupes, GPO
+│   └── wazuh-custom-rules.md              # Règles SOC personnalisées + mapping MITRE
 └── docs/
-    └── incident-response-ad.md
+    └── incident-response-ad.md            # IR playbook — AD compromise
 ```
 
 ---

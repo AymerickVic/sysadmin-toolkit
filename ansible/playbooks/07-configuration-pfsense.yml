@@ -1,0 +1,181 @@
+---
+# =============================================================================
+# Playbook: 07-configuration-pfsense.yml
+# Purpose : Configuration pfSense via collection pfsensible —
+#           DNS Unbound, DHCP LAN, 10 règles firewall
+# Target  : g1-pfsense (via Tailscale 100.98.133.72)
+# Author  : Aymerick Victoire
+# Prérequis: pip install pfsensible.core | ansible-galaxy collection install pfsensible.core
+# Note    : become: no — pfSense gère ses propres droits via SSH admin
+# Bugs résolus :
+#   - pfsense_dns_resolver_domain_override inexistant → domainoverrides dans pfsense_dns_resolver
+#   - pfsense_dhcp inexistant → pfsense_dhcp_server
+#   - ports: "1514-1515" invalide → ports: "1514:1515"
+#   - Python 3.11 non détecté → ansible_python_interpreter: /usr/local/bin/python3.11
+# =============================================================================
+
+- name: Configuration pfSense G1
+  hosts: g1-pfsense
+  become: false
+  gather_facts: false
+
+  tasks:
+
+    # ── DNS Unbound — domain override g1soc.local → AD ───────────────────
+    - name: Configurer DNS Resolver (domain override g1soc.local → AD)
+      pfsensible.core.pfsense_dns_resolver:
+        domainoverrides:
+          - domain: "g1soc.local"
+            ip: "192.168.10.10"
+        state: present
+
+    # ── DHCP LAN ──────────────────────────────────────────────────────────
+    - name: Configurer DHCP LAN (plage .100-.200)
+      pfsensible.core.pfsense_dhcp_server:
+        interface: lan
+        enable: true
+        range_from: "192.168.10.100"
+        range_to: "192.168.10.200"
+        dnsserver: "192.168.10.10"
+        gateway: "192.168.10.1"
+        domain: "g1soc.local"
+        defaultleasetime: 86400
+        maxleasetime: 86400
+        state: present
+
+    # ── Règles firewall LAN ───────────────────────────────────────────────
+    # Supprime la règle permissive par défaut (allow all LAN → any)
+    - name: Supprimer la règle LAN permissive par défaut
+      pfsensible.core.pfsense_rule:
+        name: "Default allow LAN to any rule"
+        interface: lan
+        state: absent
+
+    - name: Règle 01 — SSH admin pfSense (LAN → pfSense:22)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-to-pfSense-SSH"
+        interface: lan
+        action: pass
+        protocol: tcp
+        source: "192.168.10.0/24"
+        destination: "192.168.10.1"
+        destination_port: "22"
+        descr: "SSH admin pfSense depuis LAN"
+        state: present
+
+    - name: Règle 02 — DNS UDP (LAN → pfSense:53)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-DNS-UDP"
+        interface: lan
+        action: pass
+        protocol: udp
+        source: "192.168.10.0/24"
+        destination: "192.168.10.1"
+        destination_port: "53"
+        descr: "DNS UDP vers pfSense (Unbound)"
+        state: present
+
+    - name: Règle 03 — DNS TCP (LAN → pfSense:53)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-DNS-TCP"
+        interface: lan
+        action: pass
+        protocol: tcp
+        source: "192.168.10.0/24"
+        destination: "192.168.10.1"
+        destination_port: "53"
+        descr: "DNS TCP vers pfSense (Unbound)"
+        state: present
+
+    - name: Règle 04 — NTP (LAN → pfSense:123)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-NTP"
+        interface: lan
+        action: pass
+        protocol: udp
+        source: "192.168.10.0/24"
+        destination: "192.168.10.1"
+        destination_port: "123"
+        descr: "NTP vers pfSense"
+        state: present
+
+    - name: Règle 05 — Tout trafic vers AD (LAN → 192.168.10.10)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-to-AD"
+        interface: lan
+        action: pass
+        protocol: any
+        source: "192.168.10.0/24"
+        destination: "192.168.10.10"
+        descr: "Active Directory — AD DS, DNS, Kerberos, LDAP, RDP"
+        state: present
+
+    - name: Règle 06 — Agents Wazuh (LAN → 192.168.10.13:1514-1515)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-Wazuh-Agents"
+        interface: lan
+        action: pass
+        protocol: tcp
+        source: "192.168.10.0/24"
+        destination: "192.168.10.13"
+        destination_port: "1514:1515"
+        descr: "Communication agents Wazuh → manager"
+        state: present
+
+    - name: Règle 07 — Dashboard Wazuh HTTPS (LAN → 192.168.10.13:443)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-Wazuh-Dashboard"
+        interface: lan
+        action: pass
+        protocol: tcp
+        source: "192.168.10.0/24"
+        destination: "192.168.10.13"
+        destination_port: "443"
+        descr: "Wazuh Dashboard HTTPS"
+        state: present
+
+    - name: Règle 08 — GLPI HTTP (LAN → 192.168.10.11:80)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-GLPI-HTTP"
+        interface: lan
+        action: pass
+        protocol: tcp
+        source: "192.168.10.0/24"
+        destination: "192.168.10.11"
+        destination_port: "80"
+        descr: "GLPI interface web HTTP"
+        state: present
+
+    - name: Règle 09 — ICMP sortant (diagnostics réseau)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-ICMP-Out"
+        interface: lan
+        action: pass
+        protocol: icmp
+        source: "192.168.10.0/24"
+        destination: any
+        descr: "ICMP sortant — diagnostics"
+        state: present
+
+    - name: Règle 10 — HTTP/HTTPS sortant (LAN → Internet)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-HTTP-HTTPS-Out"
+        interface: lan
+        action: pass
+        protocol: tcp
+        source: "192.168.10.0/24"
+        destination: any
+        destination_port: "80:443"
+        descr: "HTTP/HTTPS sortant — mises à jour et téléchargements"
+        state: present
+
+    - name: Règle BLOCK ALL — Bloquer tout le reste (fin de liste)
+      pfsensible.core.pfsense_rule:
+        name: "LAN-BLOCK-ALL"
+        interface: lan
+        action: block
+        protocol: any
+        source: any
+        destination: any
+        descr: "Bloquer tout trafic LAN non autorisé — règle de fin"
+        state: present

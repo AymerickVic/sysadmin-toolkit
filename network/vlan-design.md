@@ -1,112 +1,108 @@
-# VLAN Design — Lab Infrastructure
+# Architecture Réseau — Lab Fil Rouge Groupe 1
 
-> Architecture réseau du lab fil rouge (B3 CPI) — 6 VMs sur KVM/libvirt avec segmentation par VLAN pfSense.
+> Infrastructure réseau du lab fil rouge B3 CPI — Groupe 1.
+> 6 VMs sur KVM/libvirt, segmentation par VLAN 100 sur pfSense 2.8.
 
-## VLAN Table
+## VLAN
 
-| VLAN ID | Name | Subnet | Gateway | Purpose |
-|---------|------|--------|---------|---------|
-| 10 | SERVERS | 192.168.10.0/24 | 192.168.10.1 | Domain controllers, servers (AD, Wazuh, GLPI) |
-| 20 | WORKSTATIONS | 192.168.20.0/24 | 192.168.20.1 | Client machines (CLIENT01) |
-| 30 | MANAGEMENT | 192.168.30.0/24 | 192.168.30.1 | Out-of-band admin access, Ansible control node |
-| 99 | DMZ | 192.168.99.0/24 | 192.168.99.1 | *(reserved for future exposure)* |
+| VLAN ID | Réseau | Passerelle | Usage |
+|---------|--------|-----------|-------|
+| **100** | 192.168.10.0/24 | 192.168.10.1 (G1-pfSense) | Toutes les VMs Groupe 1 |
 
-## Network Diagram
+> Le lab utilise un **VLAN unique (100)** dédié au Groupe 1.
+> L'isolation vis-à-vis des autres groupes est assurée par le bridge `br-g1-lan`
+> et le hook libvirt qui tague les interfaces en VLAN 100 automatiquement.
+
+## Diagramme réseau
 
 ```mermaid
 graph TB
-    Internet((Internet)) --> pfSense
+    Internet((Internet)) --> IT-Server
 
-    subgraph pfSense["pfSense Firewall (192.168.1.1 WAN)"]
-        FW["Firewall Rules<br/>+ NAT + VLAN Trunking"]
+    subgraph IT-Server["IT-Server (Rocky Linux 9.7 — KVM/libvirt)"]
+        SOCAT["Tunnels SOCAT\nSSH 1222-1225\nVNC 15901-15904"]
     end
 
-    pfSense --> |VLAN 10 — 192.168.10.0/24| VLAN10
-    pfSense --> |VLAN 20 — 192.168.20.0/24| VLAN20
-    pfSense --> |VLAN 30 — 192.168.30.0/24| VLAN30
+    IT-Server --> |VLAN 100 — 192.168.10.0/24| VLAN100
 
-    subgraph VLAN10["VLAN 10 — SERVERS"]
-        DC01["DC01<br/>192.168.10.10<br/>AD DS + DNS"]
-        WAZUH["SRV-WAZUH<br/>192.168.10.30<br/>Wazuh Manager"]
-        GLPI["SRV-GLPI01<br/>192.168.10.21<br/>GLPI ITSM"]
-        SYSLOG["SRV-SYSLOG<br/>192.168.10.31<br/>rsyslog central"]
+    subgraph VLAN100["VLAN 100 — Groupe 1 SOC (192.168.10.0/24)"]
+        PF["G1-pfSense\n192.168.10.1\nRouteur + Firewall + DHCP"]
+        AD["G1-SRV-AD\n192.168.10.10\nActive Directory + DNS\nWindows Server 2025"]
+        APP["G1-SRV-APP\n192.168.10.11\nApache + MariaDB + GLPI"]
+        IDS["G1-SURICATA\n192.168.10.12\nSuricata 7.0.10 IDS"]
+        SIEM["G1-WAZUH\n192.168.10.13\nWazuh 4.14.4 SIEM"]
+        WS["G1-workstation\n192.168.10.99\nDebian 13 XFCE4"]
     end
 
-    subgraph VLAN20["VLAN 20 — WORKSTATIONS"]
-        CLIENT01["CLIENT01<br/>192.168.20.10<br/>Windows 10"]
-    end
+    PF --> AD
+    PF --> APP
+    PF --> IDS
+    PF --> SIEM
+    PF --> WS
 
-    subgraph VLAN30["VLAN 30 — MANAGEMENT"]
-        ANSIBLE["Ansible Node<br/>192.168.30.5<br/>Control Plane"]
-    end
-
-    ANSIBLE -.->|SSH / WinRM| DC01
-    ANSIBLE -.->|SSH| WAZUH
-    ANSIBLE -.->|SSH| SYSLOG
-
-    DC01 -->|AD Auth| CLIENT01
-    WAZUH -->|Wazuh Agent| CLIENT01
-    WAZUH -->|Wazuh Agent| DC01
-    SYSLOG -->|rsyslog forward| WAZUH
+    SIEM -->|"Wazuh agent"| AD
+    SIEM -->|"Wazuh agent"| APP
+    SIEM -->|"eve.json"| IDS
+    SIEM -->|"Wazuh agent"| WS
+    AD -->|"AD Auth + DNS"| WS
 ```
 
-## Firewall Rules Summary
-
-### VLAN 10 → VLAN 20 (Servers → Workstations)
-| Proto | Source | Destination | Port | Action | Reason |
-|-------|--------|-------------|------|--------|--------|
-| TCP | 192.168.10.10/32 | 192.168.20.0/24 | Any | ALLOW | DC → clients (Netlogon, GPO, Kerberos) |
-| TCP | 192.168.10.30/32 | 192.168.20.0/24 | 1514 | ALLOW | Wazuh agent communication |
-| Any | Any | Any | Any | DENY | Default deny |
-
-### VLAN 20 → VLAN 10 (Workstations → Servers)
-| Proto | Source | Destination | Port | Action | Reason |
-|-------|--------|-------------|------|--------|--------|
-| TCP/UDP | 192.168.20.0/24 | 192.168.10.10/32 | 53 | ALLOW | DNS queries to DC |
-| TCP/UDP | 192.168.20.0/24 | 192.168.10.10/32 | 88,389,445,636 | ALLOW | AD (Kerberos, LDAP, SMB) |
-| TCP | 192.168.20.0/24 | 192.168.10.21/32 | 80,443 | ALLOW | GLPI access |
-| Any | Any | Any | Any | DENY | Default deny |
-
-### VLAN 30 → Any (Management)
-| Proto | Source | Destination | Port | Action | Reason |
-|-------|--------|-------------|------|--------|--------|
-| TCP | 192.168.30.5/32 | 192.168.10.0/24 | 22 | ALLOW | Ansible SSH to Linux servers |
-| TCP | 192.168.30.5/32 | 192.168.10.10/32 | 5985,5986 | ALLOW | Ansible WinRM to DC |
-| Any | 192.168.30.0/24 | Any | Any | DENY | Restrict management scope |
-
-## IP Address Allocation
+## Plan d'adressage IP
 
 ```
-192.168.10.0/24 — SERVERS
-  .1   pfSense VLAN10 gateway
-  .10  DC01 (Primary Domain Controller)
-  .20  SRV-FILE01 (File Server)
-  .21  SRV-GLPI01 (ITSM)
-  .30  SRV-WAZUH (SIEM)
-  .31  SRV-SYSLOG (Log collector)
-  .254 Reserved
-
-192.168.20.0/24 — WORKSTATIONS
-  .1   pfSense VLAN20 gateway
-  .10  CLIENT01 (static — domain-joined test workstation)
-  .100-.200 DHCP pool (dynamic clients)
-
-192.168.30.0/24 — MANAGEMENT
-  .1   pfSense VLAN30 gateway
-  .5   Ansible control node
+192.168.10.0/24 — VLAN 100 Groupe 1
+  .1    G1-pfSense       (passerelle, DHCP, NAT, firewall)
+  .10   G1-SRV-AD        (Active Directory, DNS — g1soc.local)
+  .11   G1-SRV-APP       (Apache2, PHP 8.4, MariaDB, GLPI 11.0.6)
+  .12   G1-SURICATA      (Suricata 7.0.10 IDS)
+  .13   G1-WAZUH         (Wazuh 4.14.4 — Manager + Indexer + Dashboard)
+  .99   G1-workstation   (Poste client Debian 13 XFCE4)
+  .100-.200  Pool DHCP   (plage dynamique — réservations statiques pour les VMs)
 ```
 
-## Design Decisions
+## Bridges réseau (IT-Server)
 
-**Why VLAN segmentation vs flat network?**
-- Limits lateral movement: a compromised workstation cannot directly reach server management ports
-- Enables per-VLAN firewall rules (pfSense interface rules)
-- Mirrors real enterprise architectures (CIS Controls, NIST CSF)
+| Bridge | Rôle |
+|--------|------|
+| `br-wan` | Bridge VLAN-aware — WAN (sortie internet, VLAN-trunk) |
+| `br-g1-lan` | LAN Groupe 1 — 192.168.10.0/24, VLAN 100 |
 
-**Why not a dedicated VLAN for domain controllers?**
-- Lab constraint: a single DC means the overhead of a dedicated VLAN adds complexity without benefit
-- In production: DCs should be in a Tier-0 VLAN with strict access controls (PAW model)
+**Hook libvirt** (`/etc/libvirt/hooks/qemu`) : attribution automatique du VLAN 100
+aux interfaces des VMs Groupe 1 au démarrage :
+```bash
+bridge vlan add dev vnet1 vid 100 pvid untagged
+```
 
-**Management VLAN (30) separation rationale:**
-- Ansible runs with elevated credentials — isolating it reduces exposure if a server VLAN host is compromised
-- Mirrors out-of-band management best practice (iDRAC/IPMI on a dedicated segment)
+## Tunnels SOCAT (IT-Server → VMs)
+
+Chaque tunnel est un service systemd avec `Restart=always`.
+
+| Port IT-Server | Protocole | Destination |
+|----------------|-----------|-------------|
+| 1222/tcp | SSH | G1-SRV-APP → 192.168.10.11:22 |
+| 1223/tcp | SSH | G1-SURICATA → 192.168.10.12:22 |
+| 1224/tcp | SSH | G1-WAZUH → 192.168.10.13:22 |
+| 1225/tcp | SSH | G1-workstation → 192.168.10.99:22 |
+| 15901/tcp | VNC | G1-SRV-APP → 192.168.10.11:5901 |
+| 15902/tcp | VNC | G1-SURICATA → 192.168.10.12:5901 |
+| 15903/tcp | VNC | G1-WAZUH → 192.168.10.13:5901 |
+| 15904/tcp | VNC | G1-workstation → 192.168.10.99:5901 |
+
+## Isolation inter-groupes
+
+- Chaque groupe a son propre bridge KVM (`br-g1-lan`, `br-g2-lan`, etc.)
+- Aucun routage entre bridges — isolation L2 complète
+- Validé par tests : 100% packet loss depuis G1 vers les autres groupes (`ping`)
+
+## Choix de conception
+
+**Pourquoi un seul VLAN vs segmentation multi-VLAN ?**
+
+Le guide officiel du projet décrit une architecture multi-VLAN (SRV/PROD/MGMT/WIFI…).
+Le lab déploie une version simplifiée avec un VLAN unique (100) pour des raisons pratiques :
+- Complexité réduite pour un lab pédagogique
+- Isolation inter-groupes garantie par les bridges KVM
+- Segmentation interne reportée à la phase de tests pfSense avancés
+
+En environnement de production, les VMs devraient être réparties sur des VLANs dédiés
+(AD/Servers/Management/Workstations) avec des règles firewall inter-VLAN strictes.

@@ -1,0 +1,6 @@
+# /etc/network/interfaces.d/enp1s0 — géré par Ansible
+auto enp1s0
+iface enp1s0 inet static
+    address {{ internal_ip }}/24
+    gateway {{ network.gateway }}
+    dns-nameservers {{ network.dns_primary }} {{ network.dns_secondary }}

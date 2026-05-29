@@ -1,0 +1,94 @@
+---
+# =============================================================================
+# Playbook: 03-deploiement-vnc-xfce4.yml
+# Purpose : Déploiement VNC (TigerVNC port 5901) + environnement XFCE4
+# Target  : groupe1 (4 VMs Linux)
+# Author  : Aymerick Victoire
+# =============================================================================
+
+- name: Déploiement VNC et XFCE4 sur les VMs Groupe 1
+  hosts: groupe1
+  become: true
+
+  vars:
+    vnc_display: 1
+    vnc_geometry: "1280x800"
+    vnc_user: g1admin
+
+  tasks:
+
+    - name: Installer XFCE4 et dépendances
+      apt:
+        name:
+          - xfce4
+          - xfce4-goodies
+          - dbus-x11
+        state: present
+        update_cache: true
+
+    - name: Installer TigerVNC
+      apt:
+        name:
+          - tigervnc-standalone-server
+          - tigervnc-tools
+        state: present
+
+    - name: Créer le répertoire .vnc pour {{ vnc_user }}
+      file:
+        path: /home/{{ vnc_user }}/.vnc
+        state: directory
+        owner: "{{ vnc_user }}"
+        group: "{{ vnc_user }}"
+        mode: '0700'
+
+    - name: Déployer le script xstartup XFCE4
+      copy:
+        dest: /home/{{ vnc_user }}/.vnc/xstartup
+        content: |
+          #!/bin/bash
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+          exec startxfce4
+        owner: "{{ vnc_user }}"
+        group: "{{ vnc_user }}"
+        mode: '0755'
+
+    - name: Créer le service systemd vncserver
+      copy:
+        dest: /etc/systemd/system/vncserver@.service
+        content: |
+          [Unit]
+          Description=Remote desktop service (VNC)
+          After=syslog.target network.target
+
+          [Service]
+          Type=simple
+          User={{ vnc_user }}
+          ExecStartPre=/bin/sh -c '/usr/bin/vncserver -kill :%i > /dev/null 2>&1 || :'
+          ExecStart=/usr/bin/vncserver :%i -geometry {{ vnc_geometry }} -localhost no
+          ExecStop=/usr/bin/vncserver -kill :%i
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+      notify: Recharger systemd
+
+    - name: Activer et démarrer VNC (display :{{ vnc_display }})
+      systemd:
+        name: "vncserver@{{ vnc_display }}.service"
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Vérifier que VNC écoute sur le port 5901
+      wait_for:
+        port: 5901
+        host: 127.0.0.1
+        timeout: 15
+
+  handlers:
+    - name: Recharger systemd
+      systemd:
+        daemon_reload: true

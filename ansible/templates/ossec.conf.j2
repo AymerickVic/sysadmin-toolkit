@@ -1,0 +1,60 @@
+<!--
+  /var/ossec/etc/ossec.conf — Agent Wazuh — géré par Ansible
+  Manager : {{ wazuh.manager_ip }} | Version : {{ wazuh.version }}
+-->
+<ossec_config>
+
+  <client>
+    <server>
+      <address>{{ wazuh.manager_ip }}</address>
+      <port>1514</port>
+      <protocol>tcp</protocol>
+    </server>
+    <config-profile>debian, debian13</config-profile>
+    <notify_time>60</notify_time>
+    <time-reconnect>60</time-reconnect>
+    <auto_restart>yes</auto_restart>
+    <crypto_method>aes</crypto_method>
+  </client>
+
+  <!-- Active-response désactivé — protection subnet interne 192.168.10.0/24 -->
+  <active-response>
+    <disabled>yes</disabled>
+  </active-response>
+
+  <logging>
+    <log_format>plain</log_format>
+  </logging>
+
+  <!-- Logs système -->
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/syslog</location>
+  </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/auth.log</location>
+  </localfile>
+
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/dpkg.log</location>
+  </localfile>
+
+  <localfile>
+    <log_format>command</log_format>
+    <command>df -P</command>
+    <frequency>360</frequency>
+  </localfile>
+
+{% if inventory_hostname == 'g1-suricata' %}
+  <!-- Intégration Suricata IDS — lecture de eve.json -->
+  <localfile>
+    <log_format>json</log_format>
+    <location>/var/log/suricata/eve.json</location>
+    <label key="@source">suricata</label>
+  </localfile>
+{% endif %}
+
+</ossec_config>

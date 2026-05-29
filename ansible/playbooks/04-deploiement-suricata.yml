@@ -1,0 +1,62 @@
+---
+# =============================================================================
+# Playbook: 04-deploiement-suricata.yml
+# Purpose : Déploiement Suricata IDS/IPS sur G1-SURICATA
+# Target  : g1-suricata (192.168.10.12)
+# Author  : Aymerick Victoire
+# Note    : Installation directe via apt (pas de PPA OISF) — simple et
+#           fonctionnel sur Debian 13 Trixie.
+# =============================================================================
+
+- name: Déploiement Suricata IDS/IPS
+  hosts: g1-suricata
+  become: true
+
+  vars:
+    suricata_version: "7.0.10"
+
+  tasks:
+
+    - name: Installer Suricata via apt
+      apt:
+        name: suricata
+        state: present
+        update_cache: true
+
+    - name: Déployer la configuration Suricata
+      template:
+        src: ../templates/suricata.yaml.j2
+        dest: /etc/suricata/suricata.yaml
+        owner: root
+        group: suricata
+        mode: '0640'
+        backup: true
+
+    - name: Mettre à jour les règles Suricata (suricata-update)
+      command: suricata-update
+      register: suricata_update_result
+      changed_when: "'Updated' in suricata_update_result.stdout"
+
+    - name: Activer et démarrer Suricata
+      systemd:
+        name: suricata
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Vérifier le statut Suricata
+      command: systemctl is-active suricata
+      register: suricata_status
+      changed_when: false
+
+    - name: Afficher le statut
+      debug:
+        msg: "Suricata {{ suricata_version }} : {{ suricata_status.stdout }}"
+
+  handlers:
+    # Handler défini — non déclenché dans ce playbook (pas de notify)
+    # À utiliser si une configuration custom est modifiée ultérieurement
+    - name: Redémarrer Suricata
+      service:
+        name: suricata
+        state: restarted

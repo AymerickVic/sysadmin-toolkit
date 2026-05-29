@@ -1,0 +1,48 @@
+---
+# =============================================================================
+# Playbook: 02-configuration-reseau.yml
+# Purpose : Configuration réseau statique via templates Jinja2
+# Target  : groupe1 (4 VMs Linux)
+# Author  : Aymerick Victoire
+# Note    : Les IPs sont en DHCP avec réservations statiques sur pfSense.
+#           Ce playbook configure l'interface en statique côté OS.
+# =============================================================================
+
+- name: Configuration réseau des VMs Groupe 1
+  hosts: groupe1
+  become: true
+
+  tasks:
+
+    - name: Déployer la configuration d'interface réseau (enp1s0)
+      template:
+        src: ../templates/network-interface.j2
+        dest: /etc/network/interfaces.d/enp1s0
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Redémarrer le réseau
+
+    - name: Déployer resolv.conf
+      template:
+        src: ../templates/resolv.conf.j2
+        dest: /etc/resolv.conf
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Vérifier la connectivité DNS
+      command: dig +short google.com @{{ network.dns_secondary }}
+      register: dns_check
+      changed_when: false
+      failed_when: dns_check.rc != 0
+
+    - name: Afficher le résultat DNS
+      debug:
+        msg: "DNS OK — réponse : {{ dns_check.stdout_lines }}"
+
+  handlers:
+    - name: Redémarrer le réseau
+      service:
+        name: networking
+        state: restarted

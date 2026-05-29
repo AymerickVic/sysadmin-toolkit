@@ -1,0 +1,88 @@
+---
+# Inventaire Ansible — Groupe 1 SOC Lab (Projet Fil Rouge B3 CPI)
+# Accès via tunnels SOCAT sur IT-Server (10.29.200.127 / Tailscale 100.98.133.72)
+# Credentials stockés dans ansible-vault — voir group_vars/all.yml
+
+all:
+  children:
+
+    # ── VMs Linux Groupe 1 ────────────────────────────────────────
+    groupe1:
+      hosts:
+        g1-srv-app:
+          ansible_host: 10.29.200.127
+          ansible_port: 1222
+          ansible_user: g1admin
+          internal_ip: 192.168.10.11
+          role: application_server
+          services: [apache2, mariadb, php, glpi]
+
+        g1-suricata:
+          ansible_host: 10.29.200.127
+          ansible_port: 1223
+          ansible_user: g1admin
+          internal_ip: 192.168.10.12
+          role: ids_ips
+          services: [suricata]
+
+        g1-wazuh:
+          ansible_host: 10.29.200.127
+          ansible_port: 1224
+          ansible_user: g1admin
+          internal_ip: 192.168.10.13
+          role: siem
+          services: [wazuh-manager, wazuh-indexer, wazuh-dashboard]
+
+        g1-workstation:
+          ansible_host: 10.29.200.127
+          ansible_port: 1225
+          ansible_user: g1admin
+          internal_ip: 192.168.10.99
+          role: workstation
+          services: []
+
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+        ansible_become: yes
+        ansible_become_method: sudo
+        network:
+          lan: 192.168.10.0/24
+          gateway: 192.168.10.1
+          dns_primary: 192.168.10.10
+          dns_secondary: 8.8.8.8
+          vlan_id: 100
+        ad:
+          domain: g1soc.local
+          server: 192.168.10.10
+        wazuh:
+          manager_ip: 192.168.10.13
+          version: "4.14.4"
+        suricata:
+          interface: enp1s0
+          mode: ids
+
+    # ── pfSense (via Tailscale) ───────────────────────────────────
+    pfsense:
+      hosts:
+        g1-pfsense:
+          ansible_host: 100.98.133.72
+          ansible_user: admin
+          ansible_python_interpreter: /usr/local/bin/python3.11
+          ansible_become: no
+          internal_ip: 192.168.10.1
+          role: firewall
+
+    # ── Active Directory (via tunnel SSH WinRM) ───────────────────
+    # Prérequis : ssh -L 15985:192.168.10.10:5985 g1admin@10.29.200.127
+    # WinRM NTLM rejeté post-promotion DC — utiliser Kerberos
+    windows:
+      hosts:
+        g1-srv-ad:
+          ansible_host: localhost
+          ansible_port: 15985
+          ansible_user: Administrateur   # Windows installé en FRANÇAIS — pas Administrator
+          ansible_connection: winrm
+          ansible_winrm_transport: kerberos
+          ansible_winrm_scheme: http
+          internal_ip: 192.168.10.10
+          role: active_directory

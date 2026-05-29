@@ -1,177 +1,217 @@
-# Wazuh Custom Detection Rules
+# Règles Wazuh — Détection SOC Groupe 1
 
-> Custom rules written for the fil rouge lab. Each rule targets a specific attack technique or security event relevant to a Windows/AD environment.
+> Règles personnalisées déployées sur le manager Wazuh (G1-WAZUH — 192.168.10.13).
+> Fichier : `/var/ossec/etc/rules/local_rules.xml`
+>
+> Active-response **désactivé** sur tout le subnet 192.168.10.0/24 — détection uniquement,
+> aucun risque de blocage sur l'infrastructure interne.
 
-## Rule File Location
+## Vue d'ensemble
 
-Custom rules are stored in `/var/ossec/etc/rules/local_rules.xml` on the Wazuh manager.
-
-## Rules
-
-### Rule 100001 — Multiple Failed Logons (Brute Force)
-
-**MITRE:** T1110.001 — Password Guessing
-
-```xml
-<!-- Detect 5+ failed logon attempts within 2 minutes from the same source -->
-<group name="windows,authentication,brute_force">
-
-  <rule id="100001" level="10" frequency="5" timeframe="120">
-    <if_matched_sid>60122</if_matched_sid>  <!-- Windows failed logon -->
-    <same_field>win.eventdata.ipAddress</same_field>
-    <description>Possible brute force attack — 5+ failed logons in 2 min from $(win.eventdata.ipAddress)</description>
-    <mitre>
-      <id>T1110.001</id>
-    </mitre>
-    <group>authentication_failures</group>
-  </rule>
-
-</group>
-```
-
-**Why:** Event 4625 (failed logon) alone is level 5 in Wazuh defaults — not enough for alerting. This rule correlates 5 events from the same source IP to detect credential stuffing or spray attempts.
+| ID | Groupe | Déclencheur | Niveau | MITRE |
+|----|--------|-------------|--------|-------|
+| 100101 | AD Auth | 6 échecs login / 120s — même IP | 10 | T1110.001 |
+| 100110 | AD Auth | Event 4740 — compte verrouillé | 12 | T1110 |
+| 100120 | AD Groups | Events 4728/4732/4756 — modification groupe | 10 | T1098 |
+| 100121 | AD Groups | Groupe privilégié (Domain Admins…) | 14 | T1098 |
+| 100130 | Suricata | Alerte IDS sévérité 1 | 14 | T1046 |
+| 100131 | Suricata | Alerte IDS sévérité 2 | 10 | — |
+| 100132 | Suricata | Alerte IDS sévérité 3 | 6 | — |
+| 100133 | Suricata | 10 alertes / 60s — même IP source | 12 | T1046 |
+| 100140 | AD Auth | Connexion admin réussie (type 2/10) | 3 | — |
 
 ---
 
-### Rule 100002 — New Member Added to Domain Admins
+## Règles Active Directory
 
-**MITRE:** T1098 — Account Manipulation
+### 100101 — Brute force AD
+
+**MITRE :** T1110.001 — Password Guessing
 
 ```xml
-<group name="windows,active_directory,privilege_escalation">
-
-  <rule id="100002" level="14">
-    <if_sid>60144</if_sid>  <!-- Security group membership change -->
-    <field name="win.eventdata.targetUserName" type="pcre2">(?i)domain admins</field>
-    <description>CRITICAL: User added to Domain Admins group — $(win.eventdata.subjectUserName) added $(win.eventdata.memberName)</description>
-    <mitre>
-      <id>T1098</id>
-    </mitre>
-    <group>privilege_escalation,pci_dss_10.2.5</group>
-  </rule>
-
-</group>
+<rule id="100101" level="10" frequency="6" timeframe="120">
+  <if_matched_sid>60122</if_matched_sid>
+  <same_field>win.eventdata.ipAddress</same_field>
+  <description>Brute force AD — 6 échecs login/120s depuis $(win.eventdata.ipAddress)</description>
+  <mitre><id>T1110.001</id></mitre>
+</rule>
 ```
 
-**Why:** Any modification to Domain Admins is a Tier-0 event. Level 14 triggers immediate PagerDuty/email alert. False positives are extremely rare in a well-managed environment.
+**Pourquoi :** Event 4625 (échec login) seul = level 5 dans Wazuh — insuffisant pour alerter.
+Cette règle corrèle 6 events depuis la même IP pour détecter credential stuffing / spray.
 
 ---
 
-### Rule 100003 — Scheduled Task Created (Persistence)
+### 100110 — Compte AD verrouillé
 
-**MITRE:** T1053.005 — Scheduled Task
+**MITRE :** T1110 — Brute Force
 
 ```xml
-<group name="windows,persistence">
-
-  <rule id="100003" level="10">
-    <if_sid>60634</if_sid>  <!-- Sysmon Event 1 — Process Create, or Event ID 4698 -->
-    <field name="win.system.eventID">4698</field>
-    <description>Scheduled task created: $(win.eventdata.taskName) by $(win.eventdata.subjectUserName)</description>
-    <mitre>
-      <id>T1053.005</id>
-    </mitre>
-    <group>persistence,rootkit</group>
-  </rule>
-
-</group>
+<rule id="100110" level="12">
+  <if_sid>60115</if_sid>
+  <field name="win.system.eventID">^4740$</field>
+  <description>Compte AD verrouillé : $(win.eventdata.targetUserName)</description>
+  <mitre><id>T1110</id></mitre>
+</rule>
 ```
 
-**Why:** Event 4698 (scheduled task created) is not alerted by default in Wazuh. Attackers commonly use scheduled tasks for persistence post-compromise. Any unexpected task creation on servers should be investigated.
+**Pourquoi :** Event 4740 indique un verrouillage de compte — indicateur fort d'attaque brute force
+ou de credential stuffing réussi jusqu'au seuil de lockout.
 
 ---
 
-### Rule 100004 — Service Installed (Possible Lateral Movement)
+### 100120 — Modification de groupe AD
 
-**MITRE:** T1569.002 — System Services: Service Execution
+**MITRE :** T1098 — Account Manipulation
 
 ```xml
-<group name="windows,lateral_movement">
-
-  <rule id="100004" level="10">
-    <if_sid>18107</if_sid>  <!-- Event 7045 — new service installed -->
-    <description>New Windows service installed: $(win.eventdata.serviceName) on $(win.system.computer)</description>
-    <mitre>
-      <id>T1569.002</id>
-    </mitre>
-    <group>rootkit</group>
-  </rule>
-
-</group>
+<rule id="100120" level="10">
+  <if_sid>60113</if_sid>
+  <field name="win.system.eventID">^4728$|^4732$|^4756$</field>
+  <description>Modification groupe AD : $(win.eventdata.targetUserName) → $(win.eventdata.targetObject)</description>
+  <mitre><id>T1098</id></mitre>
+</rule>
 ```
 
-**Why:** Tools like Mimikatz, PsExec, and Metasploit often install a service on the target host. Event 7045 in the System log fires when any new service is registered.
+**Pourquoi :** Events 4728 (ajout groupe global), 4732 (ajout groupe local), 4756 (ajout groupe universel).
+Tout changement de membership doit être tracé.
 
 ---
 
-### Rule 100005 — Wazuh Agent Disconnected
+### 100121 — Modification de groupe AD privilégié
+
+**MITRE :** T1098 — Account Manipulation
 
 ```xml
-<group name="wazuh,availability">
-
-  <rule id="100005" level="12">
-    <if_sid>503</if_sid>  <!-- Agent disconnected -->
-    <description>Wazuh agent OFFLINE: $(agent.name) — possible tampering or system shutdown</description>
-    <group>availability,integrity_monitoring</group>
-  </rule>
-
-</group>
+<rule id="100121" level="14">
+  <if_sid>100120</if_sid>
+  <field name="win.eventdata.targetObject" type="pcre2">(?i)domain admins|enterprise admins|schema admins</field>
+  <description>CRITIQUE : Modification groupe AD privilégié — $(win.eventdata.targetObject)</description>
+  <mitre><id>T1098</id></mitre>
+</rule>
 ```
 
-**Why:** An attacker who gains admin access may stop the Wazuh agent to blind the SIEM. An unexpected agent disconnect (especially during business hours) is a high-fidelity indicator of compromise.
+**Pourquoi :** Level 14 = alerte immédiate. Toute modification de Domain Admins / Enterprise Admins
+est un événement Tier-0. Les faux positifs sont extrêmement rares en environnement géré.
 
 ---
 
-### Rule 100006 — LSASS Access (Credential Dumping)
-
-**MITRE:** T1003.001 — LSASS Memory
-
-Requires **Sysmon** Event ID 10 (ProcessAccess targeting lsass.exe).
+### 100140 — Connexion admin réussie (traçabilité)
 
 ```xml
-<group name="windows,credential_access">
-
-  <rule id="100006" level="15">
-    <if_sid>61613</if_sid>  <!-- Sysmon ProcessAccess -->
-    <field name="win.eventdata.targetImage" type="pcre2">(?i)lsass\.exe</field>
-    <field name="win.eventdata.grantedAccess" type="pcre2">0x1010|0x1410|0x1fffff</field>
-    <description>CRITICAL: LSASS memory access detected — possible credential dumping by $(win.eventdata.sourceImage)</description>
-    <mitre>
-      <id>T1003.001</id>
-    </mitre>
-    <group>credential_access,rootkit</group>
-  </rule>
-
-</group>
+<rule id="100140" level="3">
+  <if_sid>60106</if_sid>
+  <field name="win.eventdata.logonType">^2$|^10$</field>
+  <field name="win.eventdata.targetUserName" type="pcre2">(?i)administrateur|cmoreau</field>
+  <description>Connexion admin réussie — $(win.eventdata.targetUserName) type $(win.eventdata.logonType)</description>
+</rule>
 ```
 
-**Why:** Mimikatz and similar tools open lsass.exe with `PROCESS_VM_READ` (0x0010) or `PROCESS_ALL_ACCESS` (0x1fffff). Level 15 = highest severity — immediate response required. Requires Sysmon deployed to endpoints.
+**Pourquoi :** Traçabilité des connexions admins (type 2 = interactif, type 10 = remote). Level 3 = log only,
+pas d'alerte — uniquement pour la corrélation forensic post-incident.
 
 ---
 
-## Sysmon Configuration
+## Règles Suricata IDS
 
-Sysmon deployment on CLIENT01 and DC01 uses the [SwiftOnSecurity Sysmon config](https://github.com/SwiftOnSecurity/sysmon-config) as a base, with the following additions:
+### 100130 — Alerte IDS critique (sévérité 1)
 
-- ProcessAccess to `lsass.exe` — enabled (disabled in base config for noise)
-- NetworkConnect from PowerShell, cmd, wscript, cscript — logged
+**MITRE :** T1046 — Network Service Scanning
 
-## Alert Routing
+```xml
+<rule id="100130" level="14">
+  <if_sid>86601</if_sid>
+  <field name="event_type">alert</field>
+  <field name="alert.severity">^1$</field>
+  <description>Alerte IDS Suricata CRITIQUE (sév. 1) : $(alert.signature)</description>
+  <mitre><id>T1046</id></mitre>
+</rule>
+```
 
-| Level | Destination |
-|-------|------------|
-| 1–6   | Log only (Kibana) |
-| 7–11  | Kibana alert + daily digest email |
-| 12–14 | Immediate email to admin |
-| 15    | Email + (future: PagerDuty webhook) |
+**Pourquoi :** Sévérité 1 dans les règles Suricata = menace critique (exploit, C2, intrusion confirmée).
+Level 14 déclenche une alerte immédiate.
 
-## Testing Rules
+---
+
+### 100131 — Alerte IDS majeure (sévérité 2)
+
+```xml
+<rule id="100131" level="10">
+  <if_sid>86601</if_sid>
+  <field name="event_type">alert</field>
+  <field name="alert.severity">^2$</field>
+  <description>Alerte IDS Suricata majeure (sév. 2) : $(alert.signature)</description>
+</rule>
+```
+
+---
+
+### 100132 — Alerte IDS info (sévérité 3)
+
+```xml
+<rule id="100132" level="6">
+  <if_sid>86601</if_sid>
+  <field name="event_type">alert</field>
+  <field name="alert.severity">^3$</field>
+  <description>Alerte IDS Suricata info (sév. 3) : $(alert.signature)</description>
+</rule>
+```
+
+---
+
+### 100133 — Scan réseau détecté
+
+**MITRE :** T1046 — Network Service Scanning
+
+```xml
+<rule id="100133" level="12" frequency="10" timeframe="60">
+  <if_matched_sid>86601</if_matched_sid>
+  <same_field>src_ip</same_field>
+  <description>Scan réseau détecté — 10 alertes Suricata/60s depuis $(src_ip)</description>
+  <mitre><id>T1046</id></mitre>
+</rule>
+```
+
+**Pourquoi :** 10 alertes Suricata en 60 secondes depuis la même IP source = comportement de scanner.
+Corrèle les alertes individuelles pour réduire le bruit et remonter un seul événement de niveau 12.
+
+---
+
+## Intégration Suricata → Wazuh
+
+L'agent Wazuh sur G1-SURICATA lit directement le fichier `eve.json` de Suricata :
+
+```xml
+<!-- Dans ossec.conf de l'agent g1-suricata -->
+<localfile>
+  <log_format>json</log_format>
+  <location>/var/log/suricata/eve.json</location>
+  <label key="@source">suricata</label>
+</localfile>
+```
+
+Le parent SID `86601` est le décodeur Wazuh natif pour les alertes Suricata au format eve.json.
+
+## Niveaux d'alerte
+
+| Niveau | Action |
+|--------|--------|
+| 1–5 | Log uniquement (Wazuh Dashboard) |
+| 6–9 | Alerte Dashboard |
+| 10–13 | Alerte Dashboard + notification |
+| 14–15 | Alerte critique — investigation immédiate requise |
+
+## Tester les règles
 
 ```bash
-# Replay a test event against a specific rule
-/var/ossec/bin/ossec-logtest
+# Tester la syntaxe des règles
+/var/ossec/bin/wazuh-logtest
 
-# Test rule 100002 manually
-echo '{"win":{"eventdata":{"targetUserName":"Domain Admins","subjectUserName":"test.user"}}}' | \
-  /var/ossec/bin/ossec-logtest -V
+# Tester la règle 100101 (brute force AD)
+# Simuler sur G1-workstation : 6 tentatives de login échouées sur un compte AD
+# → Vérifier l'alerte dans Wazuh Dashboard > Security Events
+
+# Tester Suricata → Wazuh
+# Depuis G1-workstation : nmap -sS 192.168.10.0/24
+# → Vérifie que la règle 100133 (scan réseau) remonte dans Wazuh
 ```

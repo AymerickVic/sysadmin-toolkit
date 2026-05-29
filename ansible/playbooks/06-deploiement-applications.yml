@@ -1,0 +1,202 @@
+---
+# =============================================================================
+# Playbook: 06-deploiement-applications.yml
+# Purpose : Déploiement Apache2 + PHP 8.4 + MariaDB + GLPI 11.0.6 sur
+#           G1-SRV-APP, puis GLPI Agent 1.11 sur toutes les VMs
+# Target  : g1-srv-app (GLPI), groupe1 (GLPI Agent)
+# Author  : Aymerick Victoire
+# =============================================================================
+
+# ── Partie 1 : Stack GLPI sur G1-SRV-APP ─────────────────────────────────
+- name: Déploiement GLPI 11.0.6 sur G1-SRV-APP
+  hosts: g1-srv-app
+  become: true
+
+  vars:
+    glpi_version: "11.0.6"
+    glpi_db_name: glpi
+    glpi_db_user: glpi_user
+    glpi_db_password: "{{ vault_glpi_db_password }}"
+    glpi_document_root: /var/www/html/glpi/public
+
+  tasks:
+
+    - name: Installer Apache2, PHP 8.4 et extensions
+      apt:
+        name:
+          - apache2
+          - php8.4
+          - php8.4-mysql
+          - php8.4-curl
+          - php8.4-gd
+          - php8.4-intl
+          - php8.4-ldap
+          - php8.4-mbstring
+          - php8.4-xml
+          - php8.4-zip
+          - php8.4-bz2
+          - libapache2-mod-php8.4
+        state: present
+        update_cache: true
+
+    - name: Installer MariaDB
+      apt:
+        name:
+          - mariadb-server
+          - python3-pymysql
+        state: present
+
+    - name: Activer et démarrer MariaDB
+      systemd:
+        name: mariadb
+        enabled: true
+        state: started
+
+    - name: Créer la base de données GLPI
+      community.mysql.mysql_db:
+        name: "{{ glpi_db_name }}"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Créer l'utilisateur MariaDB GLPI
+      community.mysql.mysql_user:
+        name: "{{ glpi_db_user }}"
+        password: "{{ glpi_db_password }}"
+        priv: "{{ glpi_db_name }}.*:ALL"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Sécuriser MariaDB (supprimer users anonymes et test DB)
+      community.mysql.mysql_db:
+        name: test
+        state: absent
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      ignore_errors: true
+
+    - name: Télécharger GLPI {{ glpi_version }}
+      get_url:
+        url: "https://github.com/glpi-project/glpi/releases/download/{{ glpi_version }}/glpi-{{ glpi_version }}.tgz"
+        dest: /tmp/glpi-{{ glpi_version }}.tgz
+        mode: '0644'
+
+    - name: Extraire GLPI dans /var/www/html/
+      unarchive:
+        src: /tmp/glpi-{{ glpi_version }}.tgz
+        dest: /var/www/html/
+        remote_src: true
+        owner: www-data
+        group: www-data
+
+    - name: Corriger les permissions GLPI
+      file:
+        path: /var/www/html/glpi
+        owner: www-data
+        group: www-data
+        recurse: true
+
+    - name: Activer mod_rewrite Apache
+      apache2_module:
+        name: rewrite
+        state: present
+      notify: Redémarrer Apache2
+
+    - name: Désactiver le site par défaut Apache
+      command: a2dissite 000-default.conf
+      args:
+        removes: /etc/apache2/sites-enabled/000-default.conf
+      notify: Redémarrer Apache2
+
+    - name: Créer le VirtualHost GLPI
+      copy:
+        dest: /etc/apache2/sites-available/glpi.conf
+        content: |
+          <VirtualHost *:80>
+              ServerName glpi.{{ ad.domain }}
+              DocumentRoot {{ glpi_document_root }}
+
+              <Directory {{ glpi_document_root }}>
+                  Options FollowSymLinks
+                  AllowOverride All
+                  Require all granted
+              </Directory>
+
+              ErrorLog ${APACHE_LOG_DIR}/glpi_error.log
+              CustomLog ${APACHE_LOG_DIR}/glpi_access.log combined
+          </VirtualHost>
+        mode: '0644'
+      notify: Redémarrer Apache2
+
+    - name: Activer le site GLPI
+      command: a2ensite glpi.conf
+      args:
+        creates: /etc/apache2/sites-enabled/glpi.conf
+      notify: Redémarrer Apache2
+
+    - name: Démarrer Apache2 explicitement
+      systemd:
+        name: apache2
+        enabled: true
+        state: started
+
+    - name: Vérifier que GLPI répond (HTTP 200)
+      uri:
+        url: "http://{{ internal_ip }}"
+        status_code: 200
+        timeout: 10
+      register: glpi_check
+      retries: 3
+      delay: 5
+
+  handlers:
+    - name: Redémarrer Apache2
+      service:
+        name: apache2
+        state: restarted
+
+
+# ── Partie 2 : GLPI Agent 1.11 sur toutes les VMs ────────────────────────
+- name: Déploiement GLPI Agent sur toutes les VMs
+  hosts: groupe1
+  become: true
+
+  vars:
+    glpi_agent_version: "1.11"
+    glpi_server_url: "http://{{ wazuh.manager_ip | regex_replace('13$', '11') }}"
+
+  tasks:
+
+    - name: Télécharger le paquet GLPI Agent
+      get_url:
+        url: "https://github.com/glpi-project/glpi-agent/releases/download/{{ glpi_agent_version }}/glpi-agent_{{ glpi_agent_version }}_all.deb"
+        dest: /tmp/glpi-agent_{{ glpi_agent_version }}_all.deb
+        mode: '0644'
+
+    - name: Installer GLPI Agent
+      apt:
+        deb: /tmp/glpi-agent_{{ glpi_agent_version }}_all.deb
+        state: present
+
+    - name: Configurer GLPI Agent (serveur + tag groupe)
+      copy:
+        dest: /etc/glpi-agent/agent.cfg
+        content: |
+          server = http://192.168.10.11
+          delaytime = 3600
+          logger = stderr
+          tag = Groupe1-SOC
+          timeout = 180
+        mode: '0644'
+      notify: Redémarrer GLPI Agent
+
+    - name: Activer et démarrer GLPI Agent
+      systemd:
+        name: glpi-agent
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: Redémarrer GLPI Agent
+      service:
+        name: glpi-agent
+        state: restarted

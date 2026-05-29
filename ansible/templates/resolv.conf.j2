@@ -1,0 +1,5 @@
+# /etc/resolv.conf — géré par Ansible
+domain {{ ad.domain }}
+search {{ ad.domain }}
+nameserver {{ network.dns_primary }}
+nameserver {{ network.dns_secondary }}

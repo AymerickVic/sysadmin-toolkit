@@ -1,0 +1,226 @@
+---
+# =============================================================================
+# Playbook: 05-deploiement-wazuh.yml
+# Purpose : Déploiement Wazuh Manager + Indexer + Dashboard sur G1-WAZUH,
+#           puis agents sur les autres VMs
+# Target  : g1-wazuh (manager) + groupe1 (agents)
+# Author  : Aymerick Victoire
+# Fix     : when: inventory_hostname != 'g1-wazuh' sur le block agents
+#           → évite le conflit apt entre wazuh-manager et wazuh-agent
+# =============================================================================
+
+# ── Partie 1 : Installation Wazuh all-in-one sur G1-WAZUH ────────────────
+- name: Déploiement Wazuh Manager + Indexer + Dashboard
+  hosts: g1-wazuh
+  become: true
+
+  vars:
+    wazuh_version: "{{ wazuh.version }}"
+
+  tasks:
+
+    - name: Installer les prérequis
+      apt:
+        name: [curl, gnupg, apt-transport-https, lsb-release]
+        state: present
+
+    - name: Ajouter la clé GPG Wazuh
+      apt_key:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+
+    - name: Ajouter le dépôt Wazuh
+      apt_repository:
+        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+        state: present
+        filename: wazuh
+        update_cache: true
+
+    - name: Installer Wazuh Manager
+      apt:
+        name: wazuh-manager
+        state: present
+
+    - name: Installer Wazuh Indexer
+      apt:
+        name: wazuh-indexer
+        state: present
+
+    - name: Installer Wazuh Dashboard
+      apt:
+        name: wazuh-dashboard
+        state: present
+
+    - name: Activer et démarrer wazuh-indexer
+      systemd:
+        name: wazuh-indexer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Activer et démarrer wazuh-manager
+      systemd:
+        name: wazuh-manager
+        enabled: true
+        state: started
+
+    - name: Activer et démarrer wazuh-dashboard
+      systemd:
+        name: wazuh-dashboard
+        enabled: true
+        state: started
+
+    - name: Déployer les règles SOC personnalisées
+      copy:
+        dest: /var/ossec/etc/rules/local_rules.xml
+        content: |
+          <!-- Règles SOC personnalisées Groupe 1 — /var/ossec/etc/rules/local_rules.xml -->
+
+          <group name="windows,active_directory,authentication">
+
+            <!-- Brute force AD : 6 échecs login en 120s depuis la même IP -->
+            <rule id="100101" level="10" frequency="6" timeframe="120">
+              <if_matched_sid>60122</if_matched_sid>
+              <same_field>win.eventdata.ipAddress</same_field>
+              <description>Brute force AD — 6 échecs login/120s depuis $(win.eventdata.ipAddress)</description>
+              <mitre><id>T1110.001</id></mitre>
+            </rule>
+
+            <!-- Compte AD verrouillé (Event 4740) -->
+            <rule id="100110" level="12">
+              <if_sid>60115</if_sid>
+              <field name="win.system.eventID">^4740$</field>
+              <description>Compte AD verrouillé : $(win.eventdata.targetUserName)</description>
+              <mitre><id>T1110</id></mitre>
+            </rule>
+
+            <!-- Modification d'un groupe AD (Events 4728/4732/4756) -->
+            <rule id="100120" level="10">
+              <if_sid>60113</if_sid>
+              <field name="win.system.eventID">^4728$|^4732$|^4756$</field>
+              <description>Modification groupe AD : $(win.eventdata.targetUserName) → $(win.eventdata.targetObject)</description>
+              <mitre><id>T1098</id></mitre>
+            </rule>
+
+            <!-- Modification d'un groupe privilégié (Domain Admins, Enterprise Admins...) -->
+            <rule id="100121" level="14">
+              <if_sid>100120</if_sid>
+              <field name="win.eventdata.targetObject" type="pcre2">(?i)domain admins|enterprise admins|schema admins</field>
+              <description>CRITIQUE : Modification groupe AD privilégié — $(win.eventdata.targetObject)</description>
+              <mitre><id>T1098</id></mitre>
+            </rule>
+
+            <!-- Connexion admin réussie (logon type 2=interactif, 10=remote) — traçabilité -->
+            <rule id="100140" level="3">
+              <if_sid>60106</if_sid>
+              <field name="win.eventdata.logonType">^2$|^10$</field>
+              <field name="win.eventdata.targetUserName" type="pcre2">(?i)administrateur|cmoreau</field>
+              <description>Connexion admin réussie — $(win.eventdata.targetUserName) type $(win.eventdata.logonType)</description>
+            </rule>
+
+          </group>
+
+          <group name="suricata,ids,network">
+
+            <!-- Alerte IDS Suricata sévérité 1 (critique) -->
+            <rule id="100130" level="14">
+              <if_sid>86601</if_sid>
+              <field name="event_type">alert</field>
+              <field name="alert.severity">^1$</field>
+              <description>Alerte IDS Suricata CRITIQUE (sév. 1) : $(alert.signature)</description>
+              <mitre><id>T1046</id></mitre>
+            </rule>
+
+            <!-- Alerte IDS Suricata sévérité 2 (majeure) -->
+            <rule id="100131" level="10">
+              <if_sid>86601</if_sid>
+              <field name="event_type">alert</field>
+              <field name="alert.severity">^2$</field>
+              <description>Alerte IDS Suricata majeure (sév. 2) : $(alert.signature)</description>
+            </rule>
+
+            <!-- Alerte IDS Suricata sévérité 3 (info) -->
+            <rule id="100132" level="6">
+              <if_sid>86601</if_sid>
+              <field name="event_type">alert</field>
+              <field name="alert.severity">^3$</field>
+              <description>Alerte IDS Suricata info (sév. 3) : $(alert.signature)</description>
+            </rule>
+
+            <!-- Scan réseau détecté : 10 alertes Suricata en 60s depuis la même IP source -->
+            <rule id="100133" level="12" frequency="10" timeframe="60">
+              <if_matched_sid>86601</if_matched_sid>
+              <same_field>src_ip</same_field>
+              <description>Scan réseau détecté — 10 alertes Suricata/60s depuis $(src_ip)</description>
+              <mitre><id>T1046</id></mitre>
+            </rule>
+
+          </group>
+        owner: root
+        group: wazuh
+        mode: '0640'
+      notify: Redémarrer Wazuh Manager
+
+    - name: Vérifier le statut Wazuh Manager
+      command: systemctl is-active wazuh-manager
+      register: wazuh_status
+      changed_when: false
+
+    - name: Afficher le statut
+      debug:
+        msg: "Wazuh Manager {{ wazuh_version }} : {{ wazuh_status.stdout }}"
+
+  handlers:
+    - name: Redémarrer Wazuh Manager
+      service:
+        name: wazuh-manager
+        state: restarted
+
+
+# ── Partie 2 : Agents Wazuh sur les VMs Linux (sauf g1-wazuh) ────────────
+- name: Déploiement agents Wazuh sur les VMs Linux
+  hosts: groupe1
+  become: true
+
+  tasks:
+
+    - name: Installer et configurer Wazuh Agent
+      block:
+
+        - name: Ajouter la clé GPG Wazuh
+          apt_key:
+            url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+            state: present
+
+        - name: Ajouter le dépôt Wazuh
+          apt_repository:
+            repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+            state: present
+            filename: wazuh
+            update_cache: true
+
+        - name: Installer wazuh-agent
+          apt:
+            name: wazuh-agent
+            state: present
+          environment:
+            WAZUH_MANAGER: "{{ wazuh.manager_ip }}"
+
+        - name: Déployer ossec.conf (agent)
+          template:
+            src: ../templates/ossec.conf.j2
+            dest: /var/ossec/etc/ossec.conf
+            owner: root
+            group: wazuh
+            mode: '0640'
+
+        - name: Activer et démarrer wazuh-agent
+          systemd:
+            name: wazuh-agent
+            enabled: true
+            state: started
+            daemon_reload: true
+
+      # Fix : empêche l'installation de wazuh-agent sur g1-wazuh
+      # qui héberge déjà wazuh-manager — conflit apt qui désinstallerait le manager
+      when: inventory_hostname != 'g1-wazuh'
