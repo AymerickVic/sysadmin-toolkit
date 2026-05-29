@@ -15,60 +15,65 @@
   become: true
 
   vars:
-    wazuh_version: "{{ wazuh.version }}"
+    # Version mineure pour l'URL de l'assistant (4.14.4 -> 4.14)
+    wazuh_install_branch: "{{ wazuh.version.split('.')[0] }}.{{ wazuh.version.split('.')[1] }}"
 
   tasks:
 
     - name: Installer les prérequis
       apt:
-        name: [curl, gnupg, apt-transport-https, lsb-release]
+        name: [curl, gnupg, apt-transport-https, lsb-release, tar]
         state: present
-
-    - name: Ajouter la clé GPG Wazuh
-      apt_key:
-        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
-        state: present
-
-    - name: Ajouter le dépôt Wazuh
-      apt_repository:
-        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
-        state: present
-        filename: wazuh
         update_cache: true
 
-    - name: Installer Wazuh Manager
-      apt:
-        name: wazuh-manager
-        state: present
+    # ── Installation all-in-one via l'assistant officiel ─────────────────
+    # L'assistant gère : indexer + manager + dashboard + génération des
+    # certificats SSL + initialisation de l'index de sécurité.
+    # NON idempotent → guardé par `creates` sur wazuh-control.
+    - name: Télécharger l'assistant d'installation Wazuh {{ wazuh_install_branch }}
+      get_url:
+        url: "https://packages.wazuh.com/{{ wazuh_install_branch }}/wazuh-install.sh"
+        dest: /root/wazuh-install.sh
+        mode: '0750'
 
-    - name: Installer Wazuh Indexer
-      apt:
-        name: wazuh-indexer
-        state: present
+    - name: Vérifier si Wazuh est déjà installé
+      stat:
+        path: /var/ossec/bin/wazuh-control
+      register: wazuh_installed
 
-    - name: Installer Wazuh Dashboard
-      apt:
-        name: wazuh-dashboard
-        state: present
+    - name: Lancer l'installation all-in-one (indexer + manager + dashboard + certs)
+      command: bash /root/wazuh-install.sh -a -i
+      args:
+        creates: /var/ossec/bin/wazuh-control
+      register: wazuh_install_result
+      when: not wazuh_installed.stat.exists
 
-    - name: Activer et démarrer wazuh-indexer
+    - name: Récupérer le mot de passe admin généré (première install uniquement)
+      shell: >
+        tar -axf /root/wazuh-install-files.tar -O wazuh-install-files/wazuh-passwords.txt
+        | grep -A1 "username: 'admin'" | grep "password:" | awk -F"'" '{print $2}'
+      register: wazuh_admin_password
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: wazuh_install_result.changed | default(false)
+
+    - name: Afficher l'emplacement des credentials
+      debug:
+        msg: >
+          Wazuh installé. Credentials dans /root/wazuh-install-files.tar
+          (wazuh-passwords.txt). Dashboard : https://{{ internal_ip }}
+
+    - name: S'assurer que les services Wazuh sont démarrés et activés
       systemd:
-        name: wazuh-indexer
+        name: "{{ item }}"
         enabled: true
         state: started
         daemon_reload: true
-
-    - name: Activer et démarrer wazuh-manager
-      systemd:
-        name: wazuh-manager
-        enabled: true
-        state: started
-
-    - name: Activer et démarrer wazuh-dashboard
-      systemd:
-        name: wazuh-dashboard
-        enabled: true
-        state: started
+      loop:
+        - wazuh-indexer
+        - wazuh-manager
+        - wazuh-dashboard
 
     - name: Déployer les règles SOC personnalisées
       copy:

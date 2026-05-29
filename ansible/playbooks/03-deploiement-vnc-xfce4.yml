@@ -14,6 +14,7 @@
     vnc_display: 1
     vnc_geometry: "1280x800"
     vnc_user: g1admin
+    vnc_password: "{{ vault_g1admin_password }}"   # ansible-vault
 
   tasks:
 
@@ -40,6 +41,21 @@
         owner: "{{ vnc_user }}"
         group: "{{ vnc_user }}"
         mode: '0700'
+
+    # vncpasswd -f lit le clair sur stdin et écrit le format binaire VNC sur stdout
+    - name: Générer le fichier de mot de passe VNC
+      shell: "set -o pipefail && echo '{{ vnc_password }}' | vncpasswd -f > /home/{{ vnc_user }}/.vnc/passwd"
+      args:
+        executable: /bin/bash
+        creates: /home/{{ vnc_user }}/.vnc/passwd
+      no_log: true
+
+    - name: Sécuriser le fichier passwd VNC (0600, propriété user)
+      file:
+        path: /home/{{ vnc_user }}/.vnc/passwd
+        owner: "{{ vnc_user }}"
+        group: "{{ vnc_user }}"
+        mode: '0600'
 
     - name: Déployer le script xstartup XFCE4
       copy:

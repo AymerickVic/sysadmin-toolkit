@@ -1,0 +1,3 @@
+*.retry
+ansible/ansible.log
+ansible/group_vars/vault.yml

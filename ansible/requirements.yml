@@ -1,0 +1,19 @@
+---
+# Collections Ansible requises par les playbooks du lab
+# Installation : ansible-galaxy collection install -r requirements.yml
+collections:
+  # Playbook 06 — modules mysql_db / mysql_user (GLPI)
+  - name: community.mysql
+    version: ">=3.0.0"
+
+  # Playbook 07 — modules pfsense_* (DNS, DHCP, firewall)
+  - name: pfsensible.core
+    version: ">=0.5.0"
+
+  # Modules systemd / utilitaires généraux
+  - name: community.general
+    version: ">=6.0.0"
+
+# Dépendances Python à installer sur le control node :
+#   pip install pywinrm[kerberos]   # playbook AD (WinRM Kerberos)
+#   pip install pymysql              # playbook 06 (déjà installé sur la cible)

@@ -50,14 +50,19 @@ Accès externe : tunnels SOCAT systemd sur IT-Server
 ## Ordre de déploiement
 
 ```
-1. IT-Server     — configuration KVM, bridges, SOCAT
-2. G1-pfSense    — réseau, DHCP, NAT
-3. G1-SRV-AD     — Active Directory, DNS (domaine g1soc.local)
-4. G1-SRV-APP    — Apache + MariaDB + GLPI
-5. G1-SURICATA   — Suricata IDS
-6. G1-WAZUH      — Wazuh Manager + Indexer + Dashboard + agents
-7. G1-workstation — domain join (net ads join), sssd, tests
+1. IT-Server     — KVM, bridges, hook VLAN, firewall, SOCAT  → voir it-server-setup.md
+2. Créer les 6 VMs — virt-install / Cockpit, attachées à br-g1-lan
+3. G1-pfSense    — réseau, DHCP, NAT (playbook 07)
+4. G1-SRV-AD     — Active Directory, DNS (g1soc.local) — installation manuelle
+5. Playbooks Ansible — 01 → 06 (config, VNC, Suricata, Wazuh, GLPI)
+6. G1-workstation — domain join (net ads join), sssd, tests
 ```
+
+> **⚠️ Prérequis Ansible** — avant d'exécuter les playbooks :
+> ```bash
+> ansible-galaxy collection install -r ../ansible/requirements.yml
+> pip install pywinrm[kerberos]   # pour le playbook AD
+> ```
 
 ## Accès
 
@@ -118,6 +123,7 @@ ssh -L 13389:192.168.10.10:3389 g1admin@10.29.200.127
 
 | Fichier | Description |
 |---------|-------------|
+| [it-server-setup.md](it-server-setup.md) | **Socle hôte** — KVM, bridges, hook VLAN 100, firewall, tunnels SOCAT |
 | [ad-structure.md](ad-structure.md) | Structure AD g1soc.local — OUs, groupes, utilisateurs, GPO |
 | [wazuh-custom-rules.md](wazuh-custom-rules.md) | Règles de détection SOC personnalisées avec mapping MITRE |
 | [../network/vlan-design.md](../network/vlan-design.md) | Architecture réseau, VLAN 100, tunnels SOCAT |

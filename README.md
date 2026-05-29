@@ -96,6 +96,10 @@ Run in **PowerShell 5.1+** on a domain-joined machine or with `-Server` targetin
 Targets: Debian 13 Trixie (4 VMs Linux) + pfSense 2.8. Requires Ansible 2.14+ on the control node.
 
 ```bash
+# Prérequis — collections et dépendances Python
+ansible-galaxy collection install -r ansible/requirements.yml
+pip install pywinrm[kerberos]
+
 # Configurer l'inventaire (adapter les IPs / ports si nécessaire)
 # ansible/inventory/groupe1.yml
 
@@ -181,6 +185,7 @@ graph LR
 sysadmin-toolkit/
 ├── ansible/
 │   ├── ansible.cfg                        # Config Ansible (inventory, SSH, privilege escalation)
+│   ├── requirements.yml                   # Collections requises (community.mysql, pfsensible.core)
 │   ├── inventory/
 │   │   └── groupe1.yml                    # Inventaire fil rouge (tunnels SOCAT + pfSense + AD)
 │   ├── group_vars/
@@ -207,6 +212,7 @@ sysadmin-toolkit/
 │   └── pfsense-baseline.md                # Configuration pfSense référence
 ├── lab/
 │   ├── README.md                          # Vue d'ensemble lab, VMs, accès
+│   ├── it-server-setup.md                 # Socle hôte KVM — bridges, hook VLAN, SOCAT
 │   ├── ad-structure.md                    # AD g1soc.local — OUs, groupes, GPO
 │   └── wazuh-custom-rules.md              # Règles SOC personnalisées + mapping MITRE
 └── docs/
