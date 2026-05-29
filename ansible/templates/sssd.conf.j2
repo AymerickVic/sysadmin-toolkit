@@ -1,0 +1,16 @@
+# /etc/sssd/sssd.conf — géré par Ansible (chmod 600 obligatoire)
+[sssd]
+services = nss, pam
+config_file_version = 2
+domains = {{ ad.domain }}
+
+[domain/{{ ad.domain }}]
+id_provider = ad
+ad_domain = {{ ad.domain }}
+krb5_realm = {{ ad.domain | upper }}
+use_fully_qualified_names = False
+ldap_id_mapping = True
+access_provider = ad
+ad_gpo_access_control = disabled
+fallback_homedir = /home/%u@%d
+cache_credentials = True

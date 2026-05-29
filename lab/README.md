@@ -123,6 +123,7 @@ ssh -L 13389:192.168.10.10:3389 g1admin@10.29.200.127
 
 | Fichier | Description |
 |---------|-------------|
+| [deployment-runbook.md](deployment-runbook.md) | **Runbook complet** — déploiement end-to-end de zéro à opérationnel (phases 0→7) |
 | [it-server-setup.md](it-server-setup.md) | **Socle hôte** — KVM, bridges, hook VLAN 100, firewall, tunnels SOCAT |
 | [ad-structure.md](ad-structure.md) | Structure AD g1soc.local — OUs, groupes, utilisateurs, GPO |
 | [wazuh-custom-rules.md](wazuh-custom-rules.md) | Règles de détection SOC personnalisées avec mapping MITRE |

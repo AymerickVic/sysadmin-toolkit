@@ -138,6 +138,28 @@
         enabled: true
         state: started
 
+    # ── Installation CLI de la base GLPI (db:install) ───────────────────────
+    # Évite l'étape d'installation web manuelle — créé les tables et config_db.php
+    - name: Installer la base GLPI en CLI (db:install)
+      command: >
+        php /var/www/html/glpi/bin/console db:install
+        --db-host=localhost
+        --db-name={{ glpi_db_name }}
+        --db-user={{ glpi_db_user }}
+        --db-password={{ glpi_db_password }}
+        --default-language=fr_FR
+        --no-interaction
+        --force
+      args:
+        creates: /var/www/html/glpi/config/config_db.php
+      become_user: www-data
+      no_log: true
+
+    - name: Supprimer le répertoire d'installation web (sécurité post-install)
+      file:
+        path: /var/www/html/glpi/install/install.php
+        state: absent
+
     - name: Vérifier que GLPI répond (HTTP 200)
       uri:
         url: "http://{{ internal_ip }}"

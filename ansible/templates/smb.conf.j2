@@ -1,0 +1,9 @@
+# /etc/samba/smb.conf — géré par Ansible (domain join {{ ad.domain }})
+[global]
+    workgroup = {{ ad.domain.split('.')[0] | upper }}
+    realm = {{ ad.domain | upper }}
+    security = ADS
+    kerberos method = secrets and keytab
+    server role = member server
+    winbind use default domain = yes
+    winbind refresh tickets = yes

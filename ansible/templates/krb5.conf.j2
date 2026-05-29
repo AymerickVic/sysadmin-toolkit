@@ -1,0 +1,18 @@
+# /etc/krb5.conf — géré par Ansible (domain join {{ ad.domain }})
+[libdefaults]
+    default_realm = {{ ad.domain | upper }}
+    dns_lookup_realm = true
+    dns_lookup_kdc = true
+    rdns = false
+    forwardable = true
+
+[realms]
+    {{ ad.domain | upper }} = {
+        kdc = {{ ad.server }}
+        admin_server = {{ ad.server }}
+        default_domain = {{ ad.domain }}
+    }
+
+[domain_realm]
+    .{{ ad.domain }} = {{ ad.domain | upper }}
+    {{ ad.domain }} = {{ ad.domain | upper }}

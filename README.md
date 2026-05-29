@@ -21,7 +21,29 @@ Everything here comes from building and running the [fil rouge lab](#lab-infrast
 
 ---
 
-## PowerShell Scripts — Active Directory
+## PowerShell Scripts — Déploiement Fil Rouge (g1soc.local)
+
+Scripts de déploiement spécifiques au projet, à exécuter **sur G1-SRV-AD** (console/RDP).
+Aucun secret en dur — les mots de passe sont demandés en `SecureString` à l'exécution.
+
+| Script | Étape | Ce qu'il fait |
+|--------|-------|---------------|
+| [`01-Install-ADDS.ps1`](powershell/fil-rouge/01-Install-ADDS.ps1) | 1 | IP statique + rôle AD DS + promotion forêt g1soc.local (reboot) |
+| [`02-Configure-ADStructure.ps1`](powershell/fil-rouge/02-Configure-ADStructure.ps1) | 2 | OUs, groupes SOC, utilisateurs (amartin/bdupont/cmoreau), GPO audit avancé |
+| [`03-Install-WazuhAgent.ps1`](powershell/fil-rouge/03-Install-WazuhAgent.ps1) | 3 | Agent Wazuh Windows → manager 192.168.10.13 |
+
+```powershell
+# Sur G1-SRV-AD (français → compte Administrateur)
+.\powershell\fil-rouge\01-Install-ADDS.ps1            # promotion DC (redémarre)
+.\powershell\fil-rouge\02-Configure-ADStructure.ps1  # structure AD complète
+.\powershell\fil-rouge\03-Install-WazuhAgent.ps1     # agent SIEM
+```
+
+> Procédure de bout en bout : voir **[lab/deployment-runbook.md](lab/deployment-runbook.md)**.
+
+---
+
+## PowerShell Scripts — Toolkit Active Directory (générique)
 
 All scripts require the `ActiveDirectory` RSAT module (`GroupPolicy` for GPO scripts).  
 Run in **PowerShell 5.1+** on a domain-joined machine or with `-Server` targeting.
@@ -131,6 +153,7 @@ ansible-playbook playbooks/01-configuration-initiale.yml --check
 | [`05-deploiement-wazuh.yml`](ansible/playbooks/05-deploiement-wazuh.yml) | g1-wazuh + groupe1 | Wazuh 4.14.4 all-in-one + 4 agents + règles SOC personnalisées |
 | [`06-deploiement-applications.yml`](ansible/playbooks/06-deploiement-applications.yml) | g1-srv-app + groupe1 | GLPI 11.0.6 (Apache2 + MariaDB) + GLPI Agent 1.11 sur toutes les VMs |
 | [`07-configuration-pfsense.yml`](ansible/playbooks/07-configuration-pfsense.yml) | g1-pfsense | DNS Unbound, DHCP LAN (.100–.200), 10 règles firewall via pfsensible |
+| [`08-domain-join-workstation.yml`](ansible/playbooks/08-domain-join-workstation.yml) | g1-workstation | Jonction au domaine g1soc.local (net ads join) + sssd + pam_mkhomedir |
 
 ---
 
@@ -198,13 +221,15 @@ sysadmin-toolkit/
 │   └── playbooks/
 │       ├── 01-configuration-initiale.yml  # Paquets, hostname, NTP, UFW
 │       ├── 02-configuration-reseau.yml    # Réseau statique via templates
-│       ├── 03-deploiement-vnc-xfce4.yml   # TigerVNC + XFCE4
+│       ├── 03-deploiement-vnc-xfce4.yml   # TigerVNC (+ vncpasswd) + XFCE4
 │       ├── 04-deploiement-suricata.yml    # Suricata 7.0.10
-│       ├── 05-deploiement-wazuh.yml       # Wazuh 4.14.4 + agents + règles SOC
-│       ├── 06-deploiement-applications.yml # GLPI 11.0.6 + GLPI Agent
-│       └── 07-configuration-pfsense.yml   # pfSense DNS/DHCP/firewall via pfsensible
+│       ├── 05-deploiement-wazuh.yml       # Wazuh 4.14.4 (assistant all-in-one) + agents + règles
+│       ├── 06-deploiement-applications.yml # GLPI 11.0.6 (db:install CLI) + GLPI Agent
+│       ├── 07-configuration-pfsense.yml   # pfSense DNS/DHCP/firewall via pfsensible
+│       └── 08-domain-join-workstation.yml # net ads join + sssd (g1-workstation)
 ├── powershell/
-│   ├── active-directory/                  # AD user management, security audits, GPO
+│   ├── fil-rouge/                         # Déploiement projet : AD DS, structure AD, agent Wazuh
+│   ├── active-directory/                  # Toolkit générique — audits, onboarding, GPO
 │   ├── monitoring/                        # Disk and service monitoring
 │   └── hardening/                         # Windows security baseline
 ├── network/
@@ -212,6 +237,7 @@ sysadmin-toolkit/
 │   └── pfsense-baseline.md                # Configuration pfSense référence
 ├── lab/
 │   ├── README.md                          # Vue d'ensemble lab, VMs, accès
+│   ├── deployment-runbook.md              # Runbook end-to-end (phases 0 → 7)
 │   ├── it-server-setup.md                 # Socle hôte KVM — bridges, hook VLAN, SOCAT
 │   ├── ad-structure.md                    # AD g1soc.local — OUs, groupes, GPO
 │   └── wazuh-custom-rules.md              # Règles SOC personnalisées + mapping MITRE
