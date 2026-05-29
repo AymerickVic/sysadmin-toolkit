@@ -106,31 +106,40 @@ if (-not $gpo) {
     Write-Host "    = GPO existe : $gpoName" -ForegroundColor DarkGray
 }
 
-# Forcer la prise en compte de l'audit avancé (sinon ignoré sur Server 2016+)
+# Forcer la prise en compte de l'audit avancé (sinon les sous-catégories
+# sont ignorées au profit des catégories legacy) — registre via GPO (fiable)
 Set-GPRegistryValue -Name $gpoName `
     -Key "HKLM\System\CurrentControlSet\Control\Lsa" `
     -ValueName "SCENoApplyLegacyAuditPolicy" -Type DWord -Value 1 | Out-Null
 
-# Écrire le fichier audit.csv dans le SYSVOL de la GPO (audit avancé réel)
-$sysvolBase = "\\$domain\SYSVOL\$domain\Policies\{$($gpo.Id)}\Machine\Microsoft\Windows NT\Audit"
-New-Item -ItemType Directory -Path $sysvolBase -Force | Out-Null
-
-$auditCsv = @"
-Machine Name,Policy Target,Subcategory,Subcategory GUID,Inclusion Setting,Exclusion Setting,Setting Value
-,System,Audit Logon,{0cce9215-69ae-11d9-bed3-505054503030},Success and Failure,,3
-,System,Audit Logoff,{0cce9216-69ae-11d9-bed3-505054503030},Success,,1
-,System,Audit User Account Management,{0cce9235-69ae-11d9-bed3-505054503030},Success and Failure,,3
-,System,Audit Security Group Management,{0cce9237-69ae-11d9-bed3-505054503030},Success,,1
-,System,Audit Computer Account Management,{0cce9236-69ae-11d9-bed3-505054503030},Success,,1
-,System,Audit Kerberos Authentication Service,{0cce9242-69ae-11d9-bed3-505054503030},Success and Failure,,3
-,System,Audit Directory Service Changes,{0cce923c-69ae-11d9-bed3-505054503030},Success,,1
-"@
-Set-Content -Path (Join-Path $sysvolBase "audit.csv") -Value $auditCsv -Encoding ASCII
-Write-Host "    + audit.csv déployé dans le SYSVOL" -ForegroundColor Green
-
-# Bump la version de la GPO pour forcer la réplication aux clients
-$gpoVersion = (Get-GPO -Name $gpoName).Computer.DSVersion
+# ── Audit avancé : auditpol directement sur le DC ───────────────────────────
+# On N'écrit PAS l'audit.csv à la main dans SYSVOL : sans enregistrement des
+# CSE GUIDs dans gPCMachineExtensionNames + bump de version GPT.ini, la GPO
+# ignorerait le fichier. auditpol applique l'audit immédiatement sur le DC,
+# là où sont générés les events 4624/4625/4740/4728 lus par l'agent Wazuh.
+# GUIDs de sous-catégorie (indépendants de la langue — Windows FR).
+Write-Host "[*] Application de l'audit avancé sur le DC (auditpol) ..." -ForegroundColor Cyan
+$auditSubcats = @(
+    @{ Guid="{0cce9215-69ae-11d9-bed3-505054503030}"; Success="enable"; Failure="enable"; Name="Logon" },
+    @{ Guid="{0cce9216-69ae-11d9-bed3-505054503030}"; Success="enable"; Failure="disable"; Name="Logoff" },
+    @{ Guid="{0cce9235-69ae-11d9-bed3-505054503030}"; Success="enable"; Failure="enable"; Name="User Account Management" },
+    @{ Guid="{0cce9237-69ae-11d9-bed3-505054503030}"; Success="enable"; Failure="disable"; Name="Security Group Management" },
+    @{ Guid="{0cce9236-69ae-11d9-bed3-505054503030}"; Success="enable"; Failure="disable"; Name="Computer Account Management" },
+    @{ Guid="{0cce9242-69ae-11d9-bed3-505054503030}"; Success="enable"; Failure="enable"; Name="Kerberos Authentication Service" },
+    @{ Guid="{0cce923c-69ae-11d9-bed3-505054503030}"; Success="enable"; Failure="disable"; Name="Directory Service Changes" }
+)
+foreach ($sc in $auditSubcats) {
+    & auditpol /set /subcategory:"$($sc.Guid)" /success:$($sc.Success) /failure:$($sc.Failure) | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "    + Audit : $($sc.Name)" -ForegroundColor Green
+    } else {
+        Write-Warning "    ! Échec auditpol sur $($sc.Name) (code $LASTEXITCODE)"
+    }
+}
 
 Write-Host ""
 Write-Host "[+] Structure AD configurée. Vérifier avec : Get-ADUser -Filter * | ft" -ForegroundColor Green
-Write-Host "    Appliquer la GPO sur les clients : gpupdate /force" -ForegroundColor Yellow
+Write-Host "    Vérifier l'audit : auditpol /get /category:* | findstr /i 'Ouverture Compte'" -ForegroundColor Yellow
+Write-Host "    NB : pour un audit avancé DOMAINE-WIDE (postes/serveurs membres)," -ForegroundColor Yellow
+Write-Host "         configurer les sous-catégories dans la GPO via GPMC (gpme.msc)" -ForegroundColor Yellow
+Write-Host "         — l'UI enregistre automatiquement les CSE GUIDs requis." -ForegroundColor Yellow

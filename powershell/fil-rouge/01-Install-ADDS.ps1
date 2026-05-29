@@ -36,6 +36,9 @@ if ($IPAddress) {
     Write-Host "[*] Configuration IP statique $IPAddress ..." -ForegroundColor Cyan
     $adapter = Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object -First 1
 
+    # Désactiver DHCP pour que l'IP statique persiste (sinon réécrite au bail)
+    Set-NetIPInterface -InterfaceIndex $adapter.ifIndex -Dhcp Disabled -ErrorAction SilentlyContinue
+
     # Supprimer une éventuelle config IP existante sur l'adaptateur
     Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
         Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
@@ -46,6 +49,9 @@ if ($IPAddress) {
         -PrefixLength 24 -DefaultGateway $Gateway | Out-Null
     Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses $DnsServer
 }
+
+# NB : DNS pointé sur 127.0.0.1 avant promotion → warning DNS bénin pendant
+# Install-ADDSForest (la promotion installe et configure le DNS). Comportement normal.
 
 # ── Installation du rôle AD DS ──────────────────────────────────────────────
 Write-Host "[*] Installation du rôle AD-Domain-Services ..." -ForegroundColor Cyan

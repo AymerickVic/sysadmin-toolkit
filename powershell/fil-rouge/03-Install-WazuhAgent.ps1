@@ -24,7 +24,10 @@
 param(
     [string]$ManagerIP    = "192.168.10.13",
     [string]$AgentVersion = "4.14.4",
-    [string]$AgentGroup   = "windows-servers"
+    # "default" existe toujours sur le manager. Pour un groupe custom
+    # (ex. windows-servers), le créer d'abord sur le manager sinon
+    # l'enregistrement agent-auth échoue.
+    [string]$AgentGroup   = "default"
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,7 +40,7 @@ if (Get-Service -Name "WazuhSvc" -ErrorAction SilentlyContinue) {
 }
 
 # ── Vérifier la connectivité au manager (TCP, pas ICMP) ─────────────────────
-Write-Host "[*] Test connectivité manager $ManagerIP:1514 ..." -ForegroundColor Cyan
+Write-Host "[*] Test connectivité manager ${ManagerIP}:1514 ..." -ForegroundColor Cyan
 $test = Test-NetConnection -ComputerName $ManagerIP -Port 1514 -WarningAction SilentlyContinue
 if (-not $test.TcpTestSucceeded) {
     Write-Warning "Port 1514 injoignable sur $ManagerIP — vérifier les règles pfSense. Poursuite quand même."
